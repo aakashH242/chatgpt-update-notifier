@@ -1,0 +1,827 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# app names this tool in messages and in its per-user directories.
+app=chatgpt-update-notifier
+# notifier_version must match VERSION in the same release archive.
+notifier_version=1.0.0
+# notification_seconds is the safe default before a config is read, including config-error alerts.
+notification_seconds=15
+# shutdown_timeout_seconds limits how long a terminal upgrade waits for ChatGPT to exit cleanly.
+shutdown_timeout_seconds=10
+# assume_yes enables the optional one-click flow after the user presses Install update.
+assume_yes=false
+# stop_app controls whether one-click mode tries to close a running app before upgrading.
+stop_app=true
+# stop_delay_seconds gives the user time to save work before one-click mode closes the app.
+stop_delay_seconds=30
+# force_kill permits SIGKILL after a one-click clean-shutdown timeout only when stop_app=true.
+force_kill=false
+# restart_app restores an app that was running when the upgrade began.
+restart_app=true
+# restart_delay_seconds gives the user time to save when one-click mode must restart an app left open.
+restart_delay_seconds=30
+# upgrade_app_state lets the automatic completion alert describe any remaining app action.
+upgrade_app_state=unchanged
+# upgrade_step_one and upgrade_step_two hold the exact package commands shown and run.
+# A second step is needed only for APT's separate metadata refresh and install.
+upgrade_step_one=()
+upgrade_step_two=()
+# proc_root is Linux's process filesystem; tests replace it with a controlled fixture tree.
+proc_root=/proc
+# config_file is user-editable data; it is parsed as key=value text, never sourced as shell code.
+config_file="${XDG_CONFIG_HOME:-$HOME/.config}/$app/config"
+# state_dir holds check timestamps and per-version silence markers across timer runs.
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/$app"
+# cache_dir holds disposable APT/checkupdates metadata, separate from system package state.
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/$app"
+# project_url is used for release archives and user-facing recovery links.
+project_url='https://github.com/aakashH242/chatgpt-update-notifier'
+# latest_version_url is the small remote VERSION file checked on each timer tick.
+latest_version_url='https://raw.githubusercontent.com/aakashH242/chatgpt-update-notifier/refs/heads/main/VERSION'
+
+# Write a diagnostic with a consistent prefix; callers decide whether to retry or stop.
+error() { printf '%s: %s\n' "$app" "$*" >&2; }
+
+# Accept a short base-10 unsigned integer inside the inclusive bounds supplied by the caller.
+# The digit-length guard prevents arithmetic overflow before Bash evaluates the value.
+valid_uint() {
+  [[ $1 =~ ^[0-9]{1,5}$ ]] || return 1
+  (( 10#$1 >= $2 && 10#$1 <= $3 ))
+}
+
+# Accept only the two literal boolean values supported by the flat config format.
+valid_bool() { [[ $1 == true || $1 == false ]]; }
+
+# Read the host distribution and set distro for package-manager dispatch.
+# Only the four distributions with supported package paths are accepted.
+detect_distro() {
+  [[ -r /etc/os-release ]] || { error 'Cannot read /etc/os-release'; return 1; }
+  . /etc/os-release
+  case "$ID" in
+    ubuntu|debian|fedora|arch) distro=$ID ;;
+    *) error "Unsupported distribution: $ID"; return 1 ;;
+  esac
+}
+
+# Parse the flat config without executing it. Set every supported runtime preference.
+# Return 2 for a missing/unreadable file and 1 for malformed data so warn_config can explain it.
+# seen rejects duplicates before each key is validated. Optional keys keep
+# safe defaults when absent, which preserves configs created by older versions.
+read_config() {
+  notification_seconds=15
+  shutdown_timeout_seconds=10
+  assume_yes=false
+  stop_app=true
+  stop_delay_seconds=30
+  force_kill=false
+  restart_app=true
+  restart_delay_seconds=30
+  [[ -f $config_file && -r $config_file ]] || { error "Missing or unreadable config: $config_file"; return 2; }
+  local line key value
+  local -A seen=()
+  while IFS= read -r line || [[ -n $line ]]; do
+    case "$line" in ''|\#*) continue ;; esac
+    if [[ ! $line =~ ^([a-z_]+)=(.*)$ ]]; then
+      error "Invalid or duplicate config entry: $line"
+      return 1
+    fi
+    key=${BASH_REMATCH[1]}
+    value=${BASH_REMATCH[2]}
+    [[ -z ${seen[$key]+x} ]] || { error "Invalid or duplicate config entry: $line"; return 1; }
+    seen[$key]=1
+    case $key in
+      interval_minutes)
+        valid_uint "$value" 15 10080 || { error 'interval_minutes must be 15–10080'; return 1; }
+        interval_minutes=$((10#$value))
+        (( interval_minutes % 15 == 0 )) || {
+          error 'interval_minutes must be a multiple of 15 between 15 and 10080'
+          return 1
+        }
+        ;;
+      notification_seconds)
+        valid_uint "$value" 1 600 || { error 'notification_seconds must be between 1 and 600'; return 1; }
+        notification_seconds=$((10#$value))
+        ;;
+      shutdown_timeout_seconds)
+        valid_uint "$value" 1 60 || { error 'shutdown_timeout_seconds must be between 1 and 60'; return 1; }
+        shutdown_timeout_seconds=$((10#$value))
+        ;;
+      assume_yes|stop_app|force_kill|restart_app)
+        valid_bool "$value" || { error "$key must be true or false"; return 1; }
+        case $key in
+          assume_yes) assume_yes=$value ;;
+          stop_app) stop_app=$value ;;
+          force_kill) force_kill=$value ;;
+          restart_app) restart_app=$value ;;
+        esac
+        ;;
+      stop_delay_seconds|restart_delay_seconds)
+        valid_uint "$value" 0 180 || { error "$key must be between 0 and 180"; return 1; }
+        if [[ $key == stop_delay_seconds ]]; then
+          stop_delay_seconds=$((10#$value))
+        else
+          restart_delay_seconds=$((10#$value))
+        fi
+        ;;
+      *) error "Invalid or duplicate config entry: $line"; return 1 ;;
+    esac
+  done <"$config_file"
+  [[ -n ${seen[interval_minutes]+x} ]] || { error 'Missing interval_minutes'; return 1; }
+}
+
+# Tell the user why app checks paused. A bad config cannot supply its own timeout,
+# so read_config leaves notification_seconds at the safe 15-second default.
+# problem is the short text chosen from read_config's return code.
+warn_config() {
+  local problem='Config is corrupt'
+  [[ $1 == 2 ]] && problem='Config is missing or unreadable'
+  notify-send --app-name='ChatGPT Update Notifier' --icon=dialog-warning --expire-time="$((notification_seconds * 1000))" \
+    'ChatGPT update checks paused' "$problem. Please reinstall from: $project_url" ||
+    error 'Could not display the config warning notification'
+}
+
+# Locate the official ChatGPT APT source and set apt_source for check_apt.
+# The package manager, not this text search, verifies repository signatures on refresh.
+# file is each readable source definition under APT's standard locations.
+find_apt_source() {
+  local file
+  for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+    [[ -r $file ]] || continue
+    if grep -qF 'persistent.oaistatic.com/codex-app-prod/linux/deb' "$file"; then
+      apt_source=$file
+      return 0
+    fi
+  done
+  error 'The official ChatGPT APT source was not found'
+  return 1
+}
+
+# Refresh the source file containing ChatGPT into a user-owned cache, then set
+# installed/candidate. A shared source file may contain other repository entries.
+# lists is the isolated metadata directory; options direct both APT tools to it;
+# policy is the refreshed package policy, which must name the OpenAI source.
+check_apt() {
+  installed=$(dpkg-query -W -f='${Version}' chatgpt) || return 1
+  find_apt_source || return 1
+  local lists="$cache_dir/apt-lists" policy
+  mkdir -p "$lists/partial"
+  local options=(
+    -o "Dir::Etc::sourcelist=$apt_source"
+    -o 'Dir::Etc::sourceparts=-'
+    -o "Dir::State::lists=$lists"
+  )
+  apt-get "${options[@]}" -o APT::Update::Error-Mode=any update >/dev/null || return 1
+  policy=$(LC_ALL=C apt-cache "${options[@]}" policy chatgpt) || return 1
+  grep -qF 'persistent.oaistatic.com/codex-app-prod/linux/deb' <<<"$policy" || {
+    error 'The refreshed OpenAI APT source did not provide ChatGPT'
+    return 1
+  }
+  candidate=$(awk '$1 == "Candidate:" { print $2; exit }' <<<"$policy")
+  [[ -n $candidate && $candidate != '(none)' ]] || { error 'No ChatGPT candidate in the refreshed APT source'; return 1; }
+  dpkg --compare-versions "$candidate" gt "$installed" || candidate=''
+}
+
+# Ask only the OpenAI DNF repository for a newer chatgpt package.
+# Set installed and candidate; an empty candidate means no available upgrade.
+check_fedora() {
+  installed=$(rpm -q --qf '%{epochnum}:%{version}-%{release}.%{arch}' chatgpt) || return 1
+  candidate=$(dnf -q --refresh --disablerepo='*' --enablerepo=openai-chatgpt \
+    repoquery --upgrades --latest-limit=1 --qf '%{epoch}:%{version}-%{release}.%{arch}' chatgpt) || return 1
+}
+
+# Use checkupdates' separate database so live pacman metadata is not partially upgraded.
+# updates is its text output; status 2 means no updates, while other failures are retried later.
+check_arch() {
+  installed=$(pacman -Q chatgpt-bin) || return 1
+  installed=${installed#chatgpt-bin }
+  local updates status=0
+  mkdir -p "$cache_dir"
+  updates=$(CHECKUPDATES_DB="$cache_dir/checkupdates-db" checkupdates --nocolor) || status=$?
+  case $status in 0|2) ;; *) error 'checkupdates failed'; return 1 ;; esac
+  candidate=$(awk '$1 == "chatgpt-bin" && $3 == "->" { print $4; exit }' <<<"$updates")
+}
+
+# Reset stale version values and dispatch to the current distribution's check.
+# The selected checker sets installed/candidate or returns failure to run_check.
+check_update() {
+  installed='' candidate=''
+  case $distro in
+    ubuntu|debian) check_apt ;;
+    fedora) check_fedora ;;
+    arch) check_arch ;;
+  esac
+}
+
+# Build the exact command arrays for manual or one-click mode in one place.
+# One-click uses sudo's authenticated session and noninteractive confirmation;
+# Arch deliberately performs a full-system upgrade to avoid partial upgrades.
+build_upgrade_command() {
+  upgrade_step_one=()
+  upgrade_step_two=()
+  if [[ ${1:-manual} == automatic ]]; then
+    case $distro in
+      ubuntu|debian)
+        upgrade_step_one=(sudo -n apt-get update)
+        upgrade_step_two=(sudo -n apt-get install --only-upgrade -y chatgpt)
+        ;;
+      fedora) upgrade_step_one=(sudo -n dnf upgrade --refresh -y chatgpt) ;;
+      arch) upgrade_step_one=(sudo -n pacman -Syu --noconfirm) ;;
+    esac
+  else
+    case $distro in
+      ubuntu|debian)
+        upgrade_step_one=(sudo apt update)
+        upgrade_step_two=(sudo apt install --only-upgrade chatgpt)
+        ;;
+      fedora) upgrade_step_one=(sudo dnf upgrade --refresh chatgpt) ;;
+      arch) upgrade_step_one=(sudo pacman -Syu) ;;
+    esac
+  fi
+}
+
+# Print the same arrays run_package_upgrade will execute. The arguments contain
+# no whitespace, so joining each array with spaces preserves the familiar command.
+upgrade_command() {
+  build_upgrade_command "${1:-manual}"
+  printf '%s' "${upgrade_step_one[*]}"
+  ((${#upgrade_step_two[@]})) && printf ' && %s' "${upgrade_step_two[*]}"
+  printf '\n'
+}
+
+# Find the first supported desktop terminal and set terminal_app for open_terminal.
+# executable is each launcher candidate, ordered to prefer common native terminals.
+terminal() {
+  local executable
+  for executable in konsole ptyxis gnome-terminal x-terminal-emulator xterm; do
+    if command -v "$executable" >/dev/null 2>&1; then
+      terminal_app=$executable
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Open this script in a visible terminal with the requested subcommand.
+# Package-manager work happens only inside upgrade, after its own confirmation.
+# self is the resolved script path and command is the single subcommand to run there.
+open_terminal() {
+  local self command=$1
+  self=$(readlink -f -- "$0")
+  terminal || return 1
+  case $terminal_app in
+    konsole|x-terminal-emulator|xterm) "$terminal_app" -e "$self" "$command" ;;
+    ptyxis|gnome-terminal) "$terminal_app" -- "$self" "$command" ;;
+  esac
+}
+
+# Apply the same display/listener timeout to both actionable alerts.
+# Print notify-send's selected action only when it exits successfully.
+# selected_action is discarded when notify-send fails or the listener times out;
+# notify_status distinguishes that deadline from other notification failures.
+# Status 124 is not proof the desktop popup vanished; it is never a user choice
+# and never a reason to write a silence marker.
+notify_action() {
+  local selected_action='' notify_status=0
+  selected_action=$(timeout "${notification_seconds}s" notify-send --app-name='ChatGPT Update Notifier' \
+    --expire-time="$((notification_seconds * 1000))" "$@") || notify_status=$?
+  if (( notify_status )); then
+    (( notify_status == 124 )) || error 'Desktop notification failed; the reminder remains eligible'
+    return 0
+  fi
+  printf '%s' "$selected_action"
+}
+
+# Ask one yes/no question with a caller-selected default. EOF and unrecognized
+# input are always No so a closed terminal can never authorize an action.
+# answer is the raw response; suffix makes the default visible before input.
+confirm() {
+  local answer suffix='[y/N]'
+  [[ ${2:-no} == yes ]] && suffix='[Y/n]'
+  read -r -p "$1 $suffix " answer || return 1
+  case ${answer,,} in
+    y|yes) return 0 ;;
+    '') [[ ${2:-no} == yes ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+# Show the ChatGPT version change and let the user explicitly silence or open confirmation.
+# body stays short for the desktop popup; command_text is kept for terminal-launch failure.
+# action is empty on close/expiry, and args omits Install when no terminal is available.
+notify_update() {
+  local body action='' command_text
+  command_text=$(upgrade_command)
+  body="$installed → $candidate"
+  local args=(--icon=chatgpt --action=silence='Silence this version')
+  if terminal; then args+=(--action=install='Install update'); fi
+  action=$(notify_action "${args[@]}" 'ChatGPT update available' "$body")
+  case $action in
+    silence) printf '%s\n' "$candidate" >"$state_dir/silenced-version" ;;
+    install) open_terminal upgrade || {
+      error "Could not open a terminal. Run: $command_text"
+      notify-send --expire-time="$((notification_seconds * 1000))" 'Open a terminal to update ChatGPT' "$command_text" || true
+    } ;;
+  esac
+}
+
+# Accept a plain three-part release version; reject remote text before using it in URLs.
+valid_notifier_version() { [[ $1 =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; }
+
+# Compare two already-validated release versions without treating equality as an update.
+# sort -V handles numeric components more reliably than a text comparison.
+newer_notifier_version() {
+  [[ $1 != "$2" && $(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1) == "$1" ]]
+}
+
+# Fetch the small GitHub VERSION file and set latest_notifier_version only if valid.
+# The time and size limits keep a bad network response from holding up timer work.
+fetch_latest_notifier_version() {
+  latest_notifier_version=$(curl -fsSL --max-time 10 --max-filesize 128 "$latest_version_url") || return 1
+  valid_notifier_version "$latest_notifier_version" || { error 'Invalid notifier VERSION from GitHub'; return 1; }
+}
+
+# Print notes for one version from this project's deliberately small YAML subset.
+# notes is the selected text; awk's active/found flags track the matching release
+# and reject a changelog that has no notes for that release.
+show_changelog() {
+  local notes
+  notes=$(awk -v target="$2" '
+    /^  - version: / { active = ($3 == target); next }
+    active && /^      - / { sub(/^      - /, "  - "); print; found = 1 }
+    END { if (!found) exit 1 }
+  ' "$1") || { error "No changelog notes for $2"; return 1; }
+  printf 'What is new in %s:\n%s\n' "$2" "$notes"
+}
+
+# Offer a notifier release separately from ChatGPT package updates.
+# body carries the version and CLI fallbacks; action is only a clicked button.
+# args offers the update button only when a supported terminal is available.
+# Closing or expiring the alert leaves silenced-notifier-version unchanged.
+notify_notifier_update() {
+  local action='' body="Notifier $notifier_version → $latest_notifier_version"$'\n'"Update: ~/.local/bin/$app --update"$'\n'"Dismiss: ~/.local/bin/$app --silence-notifier"
+  local args=(--icon=software-update-available --action=dismiss='Dismiss this version')
+  if terminal; then args+=(--action=update='Update notifier'); fi
+  action=$(notify_action "${args[@]}" 'Notifier update available' "$body")
+  case $action in
+    dismiss) printf '%s\n' "$latest_notifier_version" >"$state_dir/silenced-notifier-version" ;;
+    update) open_terminal --update || error "Could not open a terminal. Run: ~/.local/bin/$app --update" ;;
+  esac
+}
+
+# Check the notifier's remote VERSION on every timer tick, independent of app cadence.
+# For a newer release, skip its alert when that exact version was dismissed.
+check_notifier_update() {
+  fetch_latest_notifier_version || { error 'Notifier release check failed; will retry at the next timer tick'; return 0; }
+  if ! newer_notifier_version "$latest_notifier_version" "$notifier_version"; then return 0; fi
+  mkdir -p "$state_dir"
+  printf '%s\n' "$latest_notifier_version" >"$state_dir/last-available-notifier-version"
+  if is_silenced silenced-notifier-version "$latest_notifier_version"; then return 0; fi
+  notify_notifier_update
+}
+
+# Download one tagged notifier release and ask before running its installer.
+# A subshell keeps the EXIT cleanup trap and temporary paths out of other commands.
+# download_dir owns the archive; source_dir holds its extracted files.
+# The changelog and exact command appear before confirm asks permission.
+update_notifier() (
+  fetch_latest_notifier_version || return 1
+  if ! newer_notifier_version "$latest_notifier_version" "$notifier_version"; then
+    printf 'Notifier %s is up to date.\n' "$notifier_version"
+    return 0
+  fi
+  local download_dir source_dir
+  download_dir=$(mktemp -d) || return 1
+  trap 'rm -r -- "$download_dir"' EXIT
+  source_dir="$download_dir/source"
+  mkdir "$source_dir"
+  if ! curl -fsSL --max-time 30 \
+    "$project_url/archive/refs/tags/v$latest_notifier_version.tar.gz" -o "$download_dir/source.tar.gz" ||
+    ! tar -xzf "$download_dir/source.tar.gz" -C "$source_dir" --strip-components=1 ||
+    [[ ! -f $source_dir/install.sh || ! -f $source_dir/chatgpt-update-notifier || ! -f $source_dir/CHANGELOG.yaml || ! -f $source_dir/VERSION ]] ||
+    [[ $(<"$source_dir/VERSION") != "$latest_notifier_version" ]]; then
+    error 'Could not download a matching notifier release; nothing was installed'
+    return 1
+  fi
+  show_changelog "$source_dir/CHANGELOG.yaml" "$latest_notifier_version" || return 1
+  printf '\nCommand: bash %q\n' "$source_dir/install.sh"
+  if ! confirm 'Run the notifier installer?'; then printf 'Cancelled.\n'; return 0; fi
+  bash "$source_dir/install.sh"
+)
+
+# Check ChatGPT only when the configured interval has elapsed.
+# config_status distinguishes missing/unreadable from corrupt config; now/previous
+# gate scans, and last-check advances only after a successful package query.
+run_check() {
+  local config_status=0
+  read_config || config_status=$?
+  if (( config_status )); then warn_config "$config_status"; return 0; fi
+  detect_distro || return 1
+  local now previous=0
+  now=$(date +%s)
+  if [[ -r $state_dir/last-check ]]; then
+    read -r previous <"$state_dir/last-check" || true
+    [[ $previous =~ ^[0-9]+$ ]] || previous=0
+  fi
+  if (( previous <= now && now - previous < interval_minutes * 60 )); then return 0; fi
+  if ! check_update; then error 'Update check failed; will retry at the next timer tick'; return 1; fi
+  mkdir -p "$state_dir"
+  printf '%s\n' "$now" >"$state_dir/last-check"
+  if [[ -z $candidate ]]; then
+    rm -f -- "$state_dir/last-available-version"
+    return 0
+  fi
+  printf '%s\n' "$candidate" >"$state_dir/last-available-version"
+  if is_silenced silenced-version "$candidate"; then return 0; fi
+  notify_update
+}
+
+# Compare one candidate with its per-stream silence marker. A missing marker
+# means this version has not been dismissed; marker is the named state file.
+is_silenced() {
+  local marker="$state_dir/$1"
+  [[ -r $marker && $(<"$marker") == "$2" ]]
+}
+
+# Copy a last-offered version into its matching silence marker for either
+# update stream. Arguments name the two state files, the missing-version error,
+# and the success label; the version itself always comes from the state file.
+# version_file is checked before copying so a missing update cannot be silenced.
+silence_version() {
+  local version_file="$state_dir/$1"
+  [[ -s $version_file ]] || { error "$3"; return 1; }
+  cp -- "$version_file" "$state_dir/$2"
+  printf '%s %s\n' "$4" "$(<"$version_file")"
+}
+
+# CLI fallback for silencing the last offered ChatGPT app version.
+silence() {
+  silence_version last-available-version silenced-version \
+    'No known update to silence' 'Silenced ChatGPT update'
+}
+
+# CLI fallback for dismissing the last offered notifier release only.
+silence_notifier() {
+  silence_version last-available-notifier-version silenced-notifier-version \
+    'No known notifier update to dismiss' 'Dismissed notifier update'
+}
+
+# Print the current user's genuine ChatGPT main-process PIDs, excluding Electron helpers.
+# launcher resolves the public chatgpt command to codex-launcher; expected is its
+# sibling ChatGPT binary. Each candidate must have that exact executable and argv[0].
+# A deleted suffix is legitimate after a package replaces a still-running binary.
+find_chatgpt_main_pids() {
+  local launcher expected process executable pid argument helper found=1
+  local -a arguments
+  launcher=$(command -v chatgpt) || return 1
+  launcher=$(readlink -f -- "$launcher") || return 1
+  expected="${launcher%/*}/ChatGPT"
+  for process in "$proc_root"/[0-9]*; do
+    [[ -O $process && -r $process/cmdline && -L $process/exe ]] || continue
+    executable=$(readlink -- "$process/exe") || continue
+    [[ $executable == "$expected" || $executable == "$expected (deleted)" ]] || continue
+    arguments=()
+    mapfile -d '' -t arguments <"$process/cmdline" || continue
+    [[ ${arguments[0]:-} == "$expected" ]] || continue
+    helper=0
+    for argument in "${arguments[@]:1}"; do
+      if [[ $argument == --type=* ]]; then helper=1; break; fi
+    done
+    if (( ! helper )); then
+      pid=${process##*/}
+      printf '%s\n' "$pid"
+      found=0
+    fi
+  done
+  return "$found"
+}
+
+# Print the currently validated PIDs that match an optional list of targets.
+# With no targets, every ChatGPT main process is printed. Matching a supplied
+# list prevents a later user-started process from being mistaken for the old app.
+current_chatgpt_pids() {
+  local current target matched
+  while IFS= read -r current; do
+    if (($# == 0)); then
+      printf '%s\n' "$current"
+      continue
+    fi
+    matched=0
+    for target in "$@"; do
+      if [[ $current == "$target" ]]; then matched=1; break; fi
+    done
+    (( matched )) && printf '%s\n' "$current"
+  done < <(find_chatgpt_main_pids || true)
+}
+
+# Return success while any validated ChatGPT main process, or any supplied
+# original target PID, remains alive as the expected current-user executable.
+chatgpt_running() { [[ -n $(current_chatgpt_pids "$@") ]]; }
+
+# Send one signal only to PIDs that still pass the ChatGPT identity checks.
+# Revalidation immediately before kill prevents signalling a stale, reused PID.
+signal_chatgpt() {
+  local signal_name=$1
+  shift
+  local -a pids
+  case $signal_name in
+    TERM|KILL) ;;
+    *) error "Unsupported ChatGPT signal: $signal_name"; return 2 ;;
+  esac
+  mapfile -t pids < <(current_chatgpt_pids "$@")
+  ((${#pids[@]})) || return 0
+  kill "-$signal_name" "${pids[@]}" 2>/dev/null || true
+}
+
+# Wait up to the supplied number of seconds for all selected processes to exit.
+# elapsed counts completed one-second polls; targets may be empty to mean all.
+wait_for_chatgpt_exit() {
+  local limit=$1 elapsed
+  shift
+  for ((elapsed=0; elapsed<limit; elapsed++)); do
+    chatgpt_running "$@" || return 0
+    sleep 1
+  done
+  ! chatgpt_running "$@"
+}
+
+# Request a clean Electron shutdown and wait for the configured deadline.
+# Optional PID arguments limit shutdown to the app instance captured before upgrade.
+close_chatgpt() {
+  signal_chatgpt TERM "$@"
+  wait_for_chatgpt_exit "$shutdown_timeout_seconds" "$@"
+}
+
+# Force-close only still-validated targets, then briefly verify that they exited.
+# SIGKILL is used solely after the policy layer obtains consent or reads force_kill=true.
+force_close_chatgpt() {
+  signal_chatgpt KILL "$@"
+  wait_for_chatgpt_exit 3 "$@"
+}
+
+# Launch the public command as a detached user service. Type=exec makes success
+# mean systemd completed execve(), while --collect removes the transient unit later.
+start_chatgpt() {
+  local launcher
+  launcher=$(command -v chatgpt) || { error 'Could not find the chatgpt launcher'; return 1; }
+  systemd-run --user --collect --quiet --property=Type=exec "$launcher" >/dev/null || {
+    error 'Could not start ChatGPT. Run: chatgpt'
+    return 1
+  }
+}
+
+# Show a non-actionable status alert without allowing notification failures to
+# alter the upgrade result. The configured popup timeout is reused consistently.
+notify_upgrade_status() {
+  notify-send --app-name='ChatGPT Update Notifier' --icon=software-update-available \
+    --expire-time="$((notification_seconds * 1000))" "$1" "$2" || true
+}
+
+# Count down while the selected old app remains open. Returning failure means it
+# closed during the countdown; callers then recheck whether a new app replaced it.
+countdown_while_running() {
+  local seconds=$1 purpose=$2 remaining
+  shift 2
+  notify_upgrade_status 'ChatGPT update in progress' "ChatGPT will $purpose in $seconds seconds. Save your work now."
+  for ((remaining=seconds; remaining>0; remaining--)); do
+    chatgpt_running "$@" || { printf '\n'; return 1; }
+    printf '\rChatGPT will %s in %s seconds. Save your work now. ' "$purpose" "$remaining"
+    sleep 1
+  done
+  (( seconds == 0 )) || printf '\n'
+  chatgpt_running "$@"
+}
+
+# Apply the shared clean-close then force-close policy. Manual mode asks before
+# SIGKILL; one-click mode requires both stop_app=true and force_kill=true.
+# Failure leaves the app open and lets the package operation continue.
+stop_chatgpt() {
+  local mode=$1
+  shift
+  close_chatgpt "$@" && return 0
+  printf '\nChatGPT did not close within %s seconds.\n' "$shutdown_timeout_seconds"
+  if [[ $mode == manual ]]; then
+    printf 'Unsaved work and running tasks may be lost.\n'
+    if ! confirm 'Force close it now?'; then
+      printf 'Continuing while ChatGPT remains open.\n'
+      printf 'You will be asked to restart it after the upgrade.\n'
+      return 1
+    fi
+  elif [[ $force_kill != true || $stop_app != true ]]; then
+    if [[ $stop_app == true ]]; then
+      printf 'force_kill=false, so the app will remain open during the upgrade.\n'
+    else
+      printf 'force_kill is inactive because stop_app=false; the app will remain open.\n'
+    fi
+    return 1
+  else
+    printf 'force_kill=true; force-closing the old app now.\n'
+    notify_upgrade_status 'Force-closing ChatGPT' 'ChatGPT did not close cleanly. Unsaved work may be lost.'
+  fi
+  if force_close_chatgpt "$@"; then
+    printf 'ChatGPT was force-closed.\n'
+    return 0
+  fi
+  error 'ChatGPT could not be force-closed; continuing without starting a duplicate'
+  return 1
+}
+
+# Ask sudo for a normal short-lived credential before one-click mode touches the
+# app. No password is stored, and all later package calls require this cached grant.
+authenticate_automatic_upgrade() {
+  printf 'ChatGPT Update Notifier needs administrator access to install this update.\n'
+  printf 'Your password, if requested by sudo, is handled by sudo and is never stored.\n\n'
+  sudo -v -p 'ChatGPT Update Notifier — administrator password: '
+}
+
+# Execute the package command arrays built by the same function used for display.
+# One-click flags are reached only after authenticate_automatic_upgrade succeeds.
+run_package_upgrade() {
+  build_upgrade_command "$1"
+  "${upgrade_step_one[@]}" || return $?
+  ((${#upgrade_step_two[@]})) || return 0
+  "${upgrade_step_two[@]}"
+}
+
+# Restore the user's pre-upgrade app state after rechecking both the original
+# PIDs and all current ChatGPT PIDs. A newly started process is never stopped or
+# duplicated. App-control errors never replace the package manager's status.
+finish_chatgpt_after_upgrade() {
+  local upgrade_status=$1 was_running=$2 mode=$3 result='started'
+  local should_start=0
+  shift 3
+  local -a original_pids=("$@")
+  upgrade_app_state=unchanged
+  (( was_running )) || return 0
+  if (( upgrade_status )); then
+    if chatgpt_running; then upgrade_app_state=running; return 0; fi
+    printf '\nThe upgrade failed after ChatGPT was closed.\n'
+    if [[ $mode == automatic ]]; then
+      [[ $restart_app == true ]] && should_start=1
+    elif confirm 'Reopen ChatGPT now?' yes; then
+      should_start=1
+    fi
+    if (( should_start )); then
+      if start_chatgpt; then
+        upgrade_app_state=reopened
+        printf 'ChatGPT reopened.\n'
+      else
+        upgrade_app_state=stopped
+      fi
+    else
+      upgrade_app_state=stopped
+      printf 'Run chatgpt when you are ready.\n'
+    fi
+    return 0
+  fi
+  if chatgpt_running && ! chatgpt_running "${original_pids[@]}"; then
+    upgrade_app_state=running-current
+    printf '\nChatGPT was already restarted; leaving the new process alone.\n'
+    return 0
+  fi
+  if chatgpt_running "${original_pids[@]}"; then
+    result='restarted'
+    printf '\nChatGPT is still running the previous version.\n'
+    if [[ $mode == automatic && $restart_app != true ]]; then
+      upgrade_app_state=restart-needed
+      printf 'Restart ChatGPT later to use the updated version.\n'
+      return 0
+    fi
+    if [[ $mode == manual ]] && ! confirm 'Restart it now to use the updated version?' yes; then
+      upgrade_app_state=restart-needed
+      printf 'Restart ChatGPT later to use the updated version.\n'
+      return 0
+    fi
+    if [[ $mode == automatic ]]; then
+      countdown_while_running "$restart_delay_seconds" restart "${original_pids[@]}" || true
+    fi
+    if chatgpt_running "${original_pids[@]}" && ! stop_chatgpt "$mode" "${original_pids[@]}"; then
+      upgrade_app_state=restart-needed
+      error 'The old ChatGPT process is still running; restart it manually'
+      return 0
+    fi
+    if chatgpt_running; then upgrade_app_state=running-current; return 0; fi
+  else
+    printf '\nChatGPT was running before the upgrade.\n'
+    if [[ $mode == automatic && $restart_app != true ]]; then
+      upgrade_app_state=stopped
+      printf 'Run chatgpt later to start the updated version.\n'
+      return 0
+    fi
+    if [[ $mode == manual ]] && ! confirm 'Start the updated app now?' yes; then
+      upgrade_app_state=stopped
+      printf 'Run chatgpt later to start the updated version.\n'
+      return 0
+    fi
+  fi
+  if start_chatgpt; then
+    upgrade_app_state=restarted
+    printf 'ChatGPT %s successfully.\n' "$result"
+  else
+    upgrade_app_state=stopped
+  fi
+}
+
+# Recheck installation, show the exact command, and preserve the user's initial
+# app state. Manual mode confirms each decision; one-click mode first authenticates
+# sudo, then follows the validated config without storing credentials.
+upgrade() {
+  detect_distro || return 1
+  case $distro in
+    ubuntu|debian) [[ $(dpkg-query -W -f='${Status}' chatgpt 2>/dev/null) == 'install ok installed' ]] ;;
+    fedora) rpm -q chatgpt >/dev/null 2>&1 ;;
+    arch) pacman -Q chatgpt-bin >/dev/null 2>&1 ;;
+  esac || { error 'ChatGPT is no longer installed; no upgrade command was run'; return 1; }
+  if ! read_config; then
+    error 'Using safe manual defaults because the config could not be read'
+  fi
+  local mode=manual command_text was_running=0 status=0
+  local -a original_pids=()
+  [[ $assume_yes == true ]] && mode=automatic
+  command_text=$(upgrade_command "$mode")
+  printf '\nChatGPT update — %s\n\n' "$distro"
+  if [[ $distro == arch ]]; then
+    printf 'Arch requires a FULL SYSTEM UPGRADE, not a ChatGPT-only upgrade.\n\n'
+  fi
+  printf 'Command: %s\n\n' "$command_text"
+  if [[ $mode == manual ]]; then
+    if ! confirm 'Run this command?'; then printf 'Cancelled.\n'; return 0; fi
+  elif ! authenticate_automatic_upgrade; then
+    error 'Administrator authentication failed; ChatGPT was not touched'
+    notify_upgrade_status 'ChatGPT update not started' 'Administrator authentication was cancelled or failed.'
+    return 1
+  fi
+  mapfile -t original_pids < <(current_chatgpt_pids)
+  if ((${#original_pids[@]})); then
+    was_running=1
+    if [[ $mode == automatic && $stop_app == true ]]; then
+      countdown_while_running "$stop_delay_seconds" close "${original_pids[@]}" || true
+      chatgpt_running "${original_pids[@]}" && stop_chatgpt automatic "${original_pids[@]}" || true
+    elif [[ $mode == manual ]]; then
+      printf '\nChatGPT is currently running.\nClosing it first avoids leaving the previous version open after the upgrade.\nAny unsent text or running task may be interrupted.\n\n'
+      if confirm 'Close ChatGPT before upgrading?' yes; then
+        stop_chatgpt manual "${original_pids[@]}" || true
+      else
+        printf 'Continuing while ChatGPT remains open.\n'
+      fi
+    else
+      printf 'Continuing while ChatGPT remains open.\n'
+    fi
+  fi
+  run_package_upgrade "$mode" || status=$?
+  printf '\n%s\n' "$([[ $status == 0 ]] && printf 'Upgrade finished successfully.' || printf 'Upgrade failed; no reminder was silenced.')"
+  finish_chatgpt_after_upgrade "$status" "$was_running" "$mode" "${original_pids[@]}"
+  if (( status )); then
+    notify_upgrade_status 'ChatGPT update failed' 'The package manager could not complete the update.'
+  elif [[ $mode == automatic ]]; then
+      case ${upgrade_app_state:-unchanged} in
+        restart-needed) notify_upgrade_status 'ChatGPT updated' 'Restart ChatGPT to use the updated version.' ;;
+        stopped) notify_upgrade_status 'ChatGPT updated' 'Start ChatGPT when you are ready to use the updated version.' ;;
+        restarted|running-current) notify_upgrade_status 'ChatGPT updated' 'The updated app is running.' ;;
+        *) notify_upgrade_status 'ChatGPT updated' 'The package upgrade finished successfully.' ;;
+      esac
+  fi
+  printf '\nThank you for using ChatGPT Update Notifier.\n'
+  if [[ $mode == manual ]]; then read -r -p 'Press Enter to close this terminal...' _ || true; fi
+  return "$status"
+}
+
+# Route CLI commands. For the timer, load the display duration before forking so
+# the notifier check inherits it; run_check separately validates config for app scans.
+# status keeps the ChatGPT check result, while notifier_pid is always waited on;
+# a notifier failure is logged but cannot prevent the ChatGPT check from starting.
+main() {
+  case ${1:-run} in
+    run)
+      local status=0 notifier_pid
+      read_config 2>/dev/null || notification_seconds=15
+      check_notifier_update & notifier_pid=$!
+      run_check || status=$?
+      wait "$notifier_pid" || error 'Notifier release check failed; ChatGPT check continued'
+      return "$status"
+      ;;
+    silence) silence ;;
+    --silence-notifier) silence_notifier ;;
+    upgrade) upgrade ;;
+    --version) printf '%s %s\n%s\n' "$app" "$notifier_version" "$project_url" ;;
+    --help|-h)
+      printf 'Usage: %s [run|silence|upgrade|--update|--silence-notifier|--version|--help]\n' "$app"
+      printf '  run       Check for ChatGPT and notifier updates (default)\n'
+      printf '  silence   Silence the available ChatGPT app version\n'
+      printf '  upgrade   Confirm a ChatGPT app upgrade in this terminal\n'
+      printf '  --update  Check for and install a newer notifier release\n'
+      printf '  --silence-notifier  Dismiss the available notifier release\n'
+      printf 'README: %s#readme\n' "$project_url"
+      ;;
+    --update)
+      [[ -t 0 ]] || { error 'Run --update in an interactive terminal'; return 1; }
+      local status=0
+      update_notifier || status=$?
+      read -r -p 'Press Enter to close this terminal...' _ || true
+      return "$status"
+      ;;
+    *) error 'Use --help for commands'; return 2 ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
