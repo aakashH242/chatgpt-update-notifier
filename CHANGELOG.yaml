@@ -1,0 +1,8 @@
+# Release notes use this simple shape so the Bash updater can display them without a YAML parser.
+releases:
+  - version: 1.0.0
+    changes:
+      - Initial ChatGPT desktop update checks for Ubuntu, Debian, Fedora, and Arch
+      - Interactive user install with per-version silence and optional one-click upgrades
+      - Notifier release checks, confirmed self-update, and config warnings
+      - Configurable close, force-close consent, restart, and failure recovery for a running ChatGPT app

@@ -1,0 +1,33 @@
+x-test: &test
+  working_dir: /src
+  volumes:
+    - .:/src:ro
+  security_opt:
+    - label=disable
+
+services:
+  ubuntu:
+    <<: *test
+    image: ubuntu:24.04
+    command: >-
+      bash -lc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -qq -y --no-install-recommends
+      bash coreutils curl tar util-linux shellcheck && bash tests/test-container.sh ubuntu"
+
+  debian:
+    <<: *test
+    image: debian:13-slim
+    command: >-
+      bash -lc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -qq -y --no-install-recommends
+      bash coreutils curl tar util-linux shellcheck && bash tests/test-container.sh debian"
+
+  fedora:
+    <<: *test
+    image: fedora:44
+    command: >-
+      bash -lc "dnf -q -y install bash coreutils curl tar util-linux util-linux-script ShellCheck && bash tests/test-container.sh fedora"
+
+  arch:
+    <<: *test
+    image: archlinux:latest
+    command: >-
+      bash -lc "pacman -Syu --noconfirm --needed --quiet bash coreutils curl tar util-linux shellcheck && bash tests/test-container.sh arch"
