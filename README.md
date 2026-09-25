@@ -1,4 +1,4 @@
-# CUNT - ChatGPT Update Notification Tool for Linux
+# ChatGPT Linux App Update Notification Tool for Linux
 
 Well, I kept missing ChatGPT desktop app updates and was suprised that the Linux app did not have an update flow built-in. I am sure OpenAI will eventually address this.
 
