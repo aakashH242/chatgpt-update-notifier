@@ -9,7 +9,7 @@ source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 binary="$HOME/.local/bin/$name"
 # units is the shared user-systemd directory. File operations below name only
 # this tool's service and timer; other user units in the directory are untouched.
-units="$HOME/.config/systemd/user"
+units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 # config is user-editable and must survive reinstall and uninstall unless reset is approved.
 config="${XDG_CONFIG_HOME:-$HOME/.config}/$name/config"
 # state_dir contains version silence markers and check history; uninstall leaves it intact.

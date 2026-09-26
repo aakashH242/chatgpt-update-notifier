@@ -35,6 +35,8 @@ fi
 # user_home is owned by an unprivileged numeric user, matching the installer's
 # normal-user requirement without adding an account to each base image.
 user_home="$test_root/home"
+# Deliberately avoid ~/.config so install and uninstall exercise XDG_CONFIG_HOME.
+user_config_home="$user_home/xdg-config"
 mock_bin="$test_root/mock-bin"
 mock_log="$test_root/mock.log"
 mkdir -p "$user_home" "$mock_bin"
@@ -65,7 +67,7 @@ done
 run_as_user() {
   local input=$1 command=$2
   printf '%s' "$input" | setpriv --reuid=65534 --regid=65534 --clear-groups \
-    env HOME="$user_home" SHELL=/bin/bash XDG_CONFIG_HOME="$user_home/.config" \
+    env HOME="$user_home" SHELL=/bin/bash XDG_CONFIG_HOME="$user_config_home" \
       XDG_STATE_HOME="$user_home/.local/state" XDG_CACHE_HOME="$user_home/.cache" \
       PATH="$mock_bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
       MOCK_LOG="$mock_log" script -q -e -c "$command" /dev/null
@@ -84,9 +86,9 @@ run_checked_as_user() {
 # A fresh install accepts default scan/alert values, a custom 12-second app wait,
 # and the default manual-confirmation mode before approving installation.
 run_checked_as_user $'\n\n\n12\n\ny\n' "bash $root/install.sh" 'fresh installer run failed'
-config="$user_home/.config/chatgpt-update-notifier/config"
+config="$user_config_home/chatgpt-update-notifier/config"
 binary="$user_home/.local/bin/chatgpt-update-notifier"
-units="$user_home/.config/systemd/user"
+units="$user_config_home/systemd/user"
 [[ -x $binary && -f $units/chatgpt-update-notifier.service && -f $units/chatgpt-update-notifier.timer ]] ||
   fail_test 'installer did not create the executable and user units'
 grep -qx 'interval_minutes=60' "$config" || fail_test 'installer omitted the default interval'
