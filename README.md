@@ -26,23 +26,29 @@ Run this as your normal user, not with `sudo`. Keep the downloaded script if you
 
 The wizard checks that ChatGPT is installed, shows what it will change, and asks before installing any missing tools. On Arch, installing a missing tool may upgrade your **whole system**; the wizard warns you and asks first. It never upgrades ChatGPT by itself.
 
-## Uninstall and Update
+## Updating ChatGPT
 
-To uninstall, run the command below.
+When a newer ChatGPT package is available, the notification shows both versions. **Install update** opens a visible terminal and shows the exact package-manager command. Manual mode asks Yes/No before running it; optional one-click mode starts only after you press the button. You can instead choose **Silence this version**; a later release will notify you again.
+
+If ChatGPT is open, the updater can close it before upgrading and reopen it afterward. Manual mode asks what to do. One-click mode follows the preferences in your config. Force-close is never used unless you explicitly allow it.
+
+Update alerts request 15 seconds on screen by default. Expiring or closing one does not silence it; only an explicit silence/dismiss action does. Your desktop may override the requested display time.
+
+## Updating the notifier
+
+The notifier checks its own [VERSION](VERSION) on GitHub every time the timer runs. For a newer notifier release, **Update notifier** opens a terminal, shows what is new from [CHANGELOG.yaml](CHANGELOG.yaml), displays the installer command, and asks before running it. Nothing self-installs in the background.
+
+## Uninstalling
+
+Run the downloaded installer with `--uninstall`:
 
 ```bash
 bash chatgpt-update-notifier-install.sh --uninstall
 ```
-Uninstall leaves config, state, and any system packages you approved installing in place.
-It prints a copyable `rm -r -- ...` command for removing the saved config and state directories if you want them gone too.
 
-If you no longer have the downloaded installer, download it again with the Get started command, then add `--uninstall` when running it.
+Your config, silence state, and any system packages you approved installing are kept. The installer prints a copyable `rm -r -- ...` command if you also want to remove the saved data.
 
-When a newer ChatGPT app package is available, the desktop notification shows both versions. **Install update** opens a visible terminal, shows the package-manager command, and asks Yes/No before running it. You can instead choose **Silence this version**; a later ChatGPT release will notify you.
-If ChatGPT is open, the terminal recommends closing it first and defaults to **Yes**. If the app does not close cleanly, manual mode asks before force-closing it. Afterward, it offers to start or restart ChatGPT; if the upgrade failed after closing the app, it offers to reopen the existing installation.
-Update alerts request 15 seconds on screen by default. Expiring or closing one does not silence it; only an explicit silence/dismiss action does. Your desktop may override the requested display time.
-
-The notifier checks its own [VERSION](VERSION) on GitHub every time the timer runs. For a newer notifier release, **Update notifier** opens a terminal, shows what is new from [CHANGELOG.yaml](CHANGELOG.yaml), displays the installer command, and asks before running it. Nothing self-installs in the background.
+If you deleted the installer, download it again with the **Get started** command above, then run it with `--uninstall`.
 
 ## CLI Commands
 
