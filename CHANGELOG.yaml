@@ -1,5 +1,8 @@
 # Release notes use this simple shape so the Bash updater can display them without a YAML parser.
 releases:
+  - version: 1.1.0
+    changes:
+      - Configurable desktop notification sounds, enabled by default
   - version: 1.0.0
     changes:
       - Initial ChatGPT desktop update checks for Ubuntu, Debian, Fedora, and Arch
