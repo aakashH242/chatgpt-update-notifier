@@ -276,13 +276,6 @@ say "Files: $binary, $units/$name.{service,timer}, $config"
 if ((${#missing[@]})); then say "System packages (with consent): ${dependency_command[*]}"; fi
 confirm 'Install and enable the user timer?' || { say 'Cancelled; nothing changed.'; exit 0; }
 
-# Existing valid configs are migrated only after approval and only when the
-# parser found missing keys. The notifier owns validation and default values.
-if (( missing_config_count )); then
-  bash -c '. "$1"; append_missing_config_defaults' _ "$source_dir/$name" ||
-    fail 'Could not update the existing config safely.'
-fi
-
 if ((${#missing[@]})); then
   command -v sudo >/dev/null || fail 'sudo is required to install missing system packages.'
   confirm 'Install the missing system packages now?' || fail 'Missing packages were not installed; setup stopped.'
@@ -291,14 +284,18 @@ if ((${#missing[@]})); then
 fi
 
 # The timer ticks every 15 minutes; the executable enforces the editable interval.
-# Fresh/reset configs are written here; valid older configs were only appended above.
 bash -n "$source_dir/$name" || fail 'The notifier script failed its syntax check.'
 mkdir -p "${binary%/*}" "$units" "${config%/*}"
+install -m 755 "$source_dir/$name" "$binary"
+# Install the compatible executable before adding settings an older release cannot
+# parse. A later config or systemd failure therefore cannot strand the old binary.
 if (( reset_config )) || [[ ! -e $config ]]; then
   printf '# Checks: 15–10080 minutes in steps of 15; alert: 1–600 seconds; shutdown: 1–60 seconds; delays: 0–180 seconds\ninterval_minutes=%s\nnotification_seconds=%s\nplay_sound=%s\nshutdown_timeout_seconds=%s\nassume_yes=%s\nstop_app=%s\nstop_delay_seconds=%s\nforce_kill=%s\nrestart_app=%s\nrestart_delay_seconds=%s\n' \
     "$interval" "$notification_seconds" "$play_sound" "$shutdown_timeout_seconds" "$assume_yes" "$stop_app" "$stop_delay_seconds" "$force_kill" "$restart_app" "$restart_delay_seconds" >"$config"
+elif (( missing_config_count )); then
+  bash -c '. "$1"; append_missing_config_defaults' _ "$source_dir/$name" ||
+    fail 'Could not update the existing config safely.'
 fi
-install -m 755 "$source_dir/$name" "$binary"
 printf '[Unit]\nDescription=Check for ChatGPT desktop updates\n\n[Service]\nType=oneshot\nExecStart=%%h/.local/bin/%s\n' "$name" >"$units/$name.service"
 printf '[Unit]\nDescription=Check ChatGPT updates every 15 minutes\n\n[Timer]\nOnCalendar=*:0/15\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n' >"$units/$name.timer"
 systemctl --user daemon-reload

@@ -110,6 +110,24 @@ config_before=$(sha256sum "$config")
 run_checked_as_user $'y\n' "bash $root/install.sh" 'reinstall failed'
 [[ $(sha256sum "$config") == "$config_before" ]] || fail_test 'reinstall changed the existing config'
 
+# Declining a missing dependency must leave an older executable and config paired.
+printf '#!/usr/bin/env bash\nexit 0\n' >"$binary"
+printf '# Simulated old config.\ninterval_minutes=120\n' >"$config"
+chmod 755 "$binary"
+chown 65534:65534 "$binary" "$config"
+old_binary_checksum=$(sha256sum "$binary")
+declined_config_checksum=$(sha256sum "$config")
+rm -- "$mock_bin/notify-send"
+dependency_decline_log="$test_root/dependency-decline.log"
+if run_as_user $'y\nn\n' "bash $root/install.sh" >"$dependency_decline_log" 2>&1; then
+  fail_test 'installer succeeded after a missing dependency was declined'
+fi
+grep -q 'Missing packages were not installed; setup stopped.' "$dependency_decline_log" ||
+  fail_test 'installer did not reach the missing-dependency refusal'
+[[ $(sha256sum "$binary") == "$old_binary_checksum" ]] || fail_test 'declined dependency replaced the installed executable'
+[[ $(sha256sum "$config") == "$declined_config_checksum" ]] || fail_test 'declined dependency changed the old config'
+ln -s mock-command "$mock_bin/notify-send"
+
 # An older valid config is extended in place: existing bytes and choices stay,
 # every absent key receives its current default, and a second run is a no-op.
 printf '# Keep this old config prefix.\ninterval_minutes=120\nplay_sound=false\n' >"$config"
