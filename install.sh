@@ -307,7 +307,11 @@ systemctl --user restart "$name.timer"
 say "${green}✓ Installed.${reset} The timer is active; the first check is at the next 15-minute tick."
 # Use the same display and sound preferences just written to the runtime config.
 ready_notification_options=(--app-name='ChatGPT Update Notifier' --expire-time="$((notification_seconds * 1000))")
-[[ $play_sound == true ]] && ready_notification_options+=(--hint=string:sound-name:message-new-instant)
+if [[ $play_sound == true ]]; then
+  ready_notification_options+=(--hint=string:sound-name:message-new-instant)
+else
+  ready_notification_options+=(--hint=boolean:suppress-sound:true)
+fi
 if ! notify-send "${ready_notification_options[@]}" 'ChatGPT Update Notifier is ready' 'Desktop notifications are working.'; then
   say 'Warning: the desktop notification service did not respond. Alerts may not appear until it is available.'
 fi

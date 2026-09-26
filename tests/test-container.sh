@@ -190,6 +190,7 @@ rm -- "$config"
 run_checked_as_user $'\n\nn\n\ny\nn\n\n9\ny\n' "bash $root/install.sh" 'non-stopping one-click onboarding failed'
 grep -qx 'play_sound=false' "$config" || fail_test 'onboarding ignored the disabled notification sound'
 if grep -q '^notify-send .*sound-name' "$mock_log"; then fail_test 'installer played sound when play_sound=false'; fi
+grep -q '^notify-send .*--hint=boolean:suppress-sound:true' "$mock_log" || fail_test 'installer readiness alert did not request silence'
 grep -qx 'assume_yes=true' "$config" || fail_test 'non-stopping onboarding lost one-click mode'
 grep -qx 'stop_app=false' "$config" || fail_test 'non-stopping onboarding changed stop_app'
 grep -qx 'force_kill=false' "$config" || fail_test 'force_kill was enabled without its onboarding question'

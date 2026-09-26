@@ -75,7 +75,11 @@ valid_bool() { [[ $1 == true || $1 == false ]]; }
 # notification servers that do not support sounds may safely ignore it.
 set_notification_options() {
   notification_options=(--app-name='ChatGPT Update Notifier' --expire-time="$((notification_seconds * 1000))")
-  [[ $play_sound == true ]] && notification_options+=(--hint=string:sound-name:message-new-instant)
+  if [[ $play_sound == true ]]; then
+    notification_options+=(--hint=string:sound-name:message-new-instant)
+  else
+    notification_options+=(--hint=boolean:suppress-sound:true)
+  fi
   return 0
 }
 

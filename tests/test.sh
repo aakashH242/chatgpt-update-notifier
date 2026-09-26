@@ -290,6 +290,7 @@ assert_eq "$(tail -n 1 "$test_home/notify-args")" "$installed → $candidate"
 grep -qx -- '--expire-time=600000' "$test_home/notify-args" || fail_test 'app alert ignored configured display time'
 grep -qx -- '600s' "$test_home/notify-args" || fail_test 'action listener timeout differs from alert duration'
 if grep -q -- 'sound-name' "$test_home/notify-args"; then fail_test 'app alert played sound when play_sound=false'; fi
+grep -qx -- '--hint=boolean:suppress-sound:true' "$test_home/notify-args" || fail_test 'app alert did not request silence'
 rm -- "$state_dir/silenced-version"
 timeout() { :; }
 notify_update
