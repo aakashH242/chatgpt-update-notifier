@@ -68,6 +68,10 @@ interval_minutes=60
 # You can still hide it sooner.
 notification_seconds=15
 
+# true = ask your desktop notification service to play its standard alert sound.
+# Your desktop controls the actual sound and may ignore this request.
+play_sound=true
+
 # After asking ChatGPT to close normally, wait this long before deciding it is stuck (1-60).
 shutdown_timeout_seconds=10
 

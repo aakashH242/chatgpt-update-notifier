@@ -23,6 +23,7 @@ printf 'interval_minutes=60\n' >"$config"
 read_config
 assert_eq "$interval_minutes" 60
 assert_eq "$notification_seconds" 15
+assert_eq "$play_sound" true
 assert_eq "$shutdown_timeout_seconds" 10
 assert_eq "$assume_yes" false
 assert_eq "$stop_app" true
@@ -30,6 +31,26 @@ assert_eq "$stop_delay_seconds" 30
 assert_eq "$force_kill" false
 assert_eq "$restart_app" true
 assert_eq "$restart_delay_seconds" 30
+assert_eq "${#missing_config_defaults[@]}" 9
+
+# Migrations preserve every existing byte and value, append all missing defaults,
+# and become a no-op after the first successful pass.
+printf '# Keep this comment exactly.\nplay_sound=false\n' >"$config"
+original_size=$(wc -c <"$config")
+original_prefix=$(head -c "$original_size" "$config" | sha256sum)
+append_missing_config_defaults
+assert_eq "$(head -c "$original_size" "$config" | sha256sum)" "$original_prefix"
+assert_eq "$(grep -c '^interval_minutes=' "$config")" 1
+assert_eq "$(grep -c '^play_sound=' "$config")" 1
+grep -qx 'interval_minutes=60' "$config" || fail_test 'migration omitted the default interval'
+grep -qx 'play_sound=false' "$config" || fail_test 'migration replaced the existing sound preference'
+for expected_default in notification_seconds=15 shutdown_timeout_seconds=10 assume_yes=false stop_app=true stop_delay_seconds=30 force_kill=false restart_app=true restart_delay_seconds=30; do
+  grep -qx "$expected_default" "$config" || fail_test "migration omitted $expected_default"
+done
+migrated_config=$(sha256sum "$config")
+append_missing_config_defaults
+assert_eq "$(sha256sum "$config")" "$migrated_config"
+
 printf 'interval_minutes=60\nnotification_seconds=1\n' >"$config"
 read_config
 assert_eq "$notification_seconds" 1
@@ -54,15 +75,16 @@ for invalid_shutdown in 0 61 nope; do
 done
 printf 'interval_minutes=60\nshutdown_timeout_seconds=10\nshutdown_timeout_seconds=20\n' >"$config"
 if read_config 2>/dev/null; then fail_test 'accepted duplicate shutdown_timeout_seconds'; fi
-printf 'interval_minutes=60\nassume_yes=true\nstop_app=false\nstop_delay_seconds=0\nforce_kill=true\nrestart_app=false\nrestart_delay_seconds=180\n' >"$config"
+printf 'interval_minutes=60\nplay_sound=false\nassume_yes=true\nstop_app=false\nstop_delay_seconds=0\nforce_kill=true\nrestart_app=false\nrestart_delay_seconds=180\n' >"$config"
 read_config
+assert_eq "$play_sound" false
 assert_eq "$assume_yes" true
 assert_eq "$stop_app" false
 assert_eq "$stop_delay_seconds" 0
 assert_eq "$force_kill" true
 assert_eq "$restart_app" false
 assert_eq "$restart_delay_seconds" 180
-for boolean_key in assume_yes stop_app force_kill restart_app; do
+for boolean_key in play_sound assume_yes stop_app force_kill restart_app; do
   for invalid_boolean in yes TRUE False 1; do
     printf 'interval_minutes=60\n%s=%s\n' "$boolean_key" "$invalid_boolean" >"$config"
     if read_config 2>/dev/null; then fail_test "accepted invalid $boolean_key=$invalid_boolean"; fi
@@ -81,6 +103,7 @@ rm -- "$config"
 run_check 2>/dev/null
 [[ $(<"$test_home/config-alert") == *'Config is missing or unreadable'*'https://github.com/aakashH242/chatgpt-update-notifier'* ]] || fail_test 'missing config did not warn with GitHub link'
 [[ $(<"$test_home/config-alert") == *'--expire-time=15000'* ]] || fail_test 'config warning did not use default display time'
+[[ $(<"$test_home/config-alert") == *'--hint=string:sound-name:message-new-instant'* ]] || fail_test 'config warning omitted the default sound hint'
 printf 'interval_minutes=10\n' >"$config"
 if read_config 2>/dev/null; then fail_test 'accepted interval under 15 minutes'; fi
 run_check 2>/dev/null
@@ -216,14 +239,14 @@ assert_eq "$(<"$state_dir/last-check")" "$before"
 silence >/dev/null
 assert_eq "$(<"$state_dir/silenced-version")" "$available"
 
-curl() { [[ ${CURL_FAIL:-0} == 0 ]] || return 1; printf '%s' "${REMOTE_VERSION:-1.0.0}"; }
+curl() { [[ ${CURL_FAIL:-0} == 0 ]] || return 1; printf '%s' "${REMOTE_VERSION:-1.1.0}"; }
 notifier_alerts=0
 notify_notifier_update() { notifier_alerts=$((notifier_alerts + 1)); }
-REMOTE_VERSION=1.1.0 check_notifier_update
-REMOTE_VERSION=1.1.0 check_notifier_update
+REMOTE_VERSION=1.1.1 check_notifier_update
+REMOTE_VERSION=1.1.1 check_notifier_update
 assert_eq "$notifier_alerts" 2
-printf '1.1.0\n' >"$state_dir/silenced-notifier-version"
-REMOTE_VERSION=1.1.0 check_notifier_update
+printf '1.1.1\n' >"$state_dir/silenced-notifier-version"
+REMOTE_VERSION=1.1.1 check_notifier_update
 assert_eq "$notifier_alerts" 2
 REMOTE_VERSION=1.2.0 check_notifier_update
 assert_eq "$notifier_alerts" 3
@@ -235,7 +258,7 @@ assert_eq "$notifier_alerts" 3
 CURL_FAIL=1 check_notifier_update 2>/dev/null
 assert_eq "$notifier_alerts" 3
 assert_eq "$(<"$state_dir/last-available-notifier-version")" 1.2.0
-[[ $(show_changelog "$root/CHANGELOG.yaml" 1.0.0) == *'Initial ChatGPT desktop update checks'* ]] || fail_test 'YAML release notes were not displayed'
+[[ $(show_changelog "$root/CHANGELOG.yaml" 1.1.0) == *'Configurable desktop notification sounds'* ]] || fail_test 'YAML release notes were not displayed'
 
 . "$root/chatgpt-update-notifier"
 detect_distro() { distro=fedora; }
@@ -247,17 +270,20 @@ assert_eq "$(<"$state_dir/silenced-version")" "$candidate"
 assert_eq "$(tail -n 1 "$test_home/notify-args")" "$installed → $candidate"
 grep -qx -- '--expire-time=15000' "$test_home/notify-args" || fail_test 'app alert did not use default display time'
 grep -qx -- '15s' "$test_home/notify-args" || fail_test 'default action listener timeout differs from alert duration'
+grep -qx -- '--hint=string:sound-name:message-new-instant' "$test_home/notify-args" || fail_test 'app alert omitted the default sound hint'
 if grep -q -- '--action=install=' "$test_home/notify-args"; then fail_test 'offered installation without a terminal'; fi
 terminal() { terminal_app=konsole; }
 opened=0
 open_terminal() { [[ $1 == upgrade ]] || fail_test 'wrong terminal command'; opened=$((opened + 1)); }
 notification_seconds=600
+play_sound=false
 timeout() { printf '%s\n' "$@" >"$test_home/notify-args"; printf 'install'; }
 notify_update
 assert_eq "$opened" 1
 assert_eq "$(tail -n 1 "$test_home/notify-args")" "$installed → $candidate"
 grep -qx -- '--expire-time=600000' "$test_home/notify-args" || fail_test 'app alert ignored configured display time'
 grep -qx -- '600s' "$test_home/notify-args" || fail_test 'action listener timeout differs from alert duration'
+if grep -q -- 'sound-name' "$test_home/notify-args"; then fail_test 'app alert played sound when play_sound=false'; fi
 rm -- "$state_dir/silenced-version"
 timeout() { :; }
 notify_update
@@ -652,16 +678,16 @@ distro=fedora
 # Restore the production functions before release and concurrency tests continue.
 . "$root/chatgpt-update-notifier"
 
-release_dir="$test_home/releases/chatgpt-update-notifier-v1.1.0"
+release_dir="$test_home/releases/chatgpt-update-notifier-v1.2.0"
 mkdir -p "$release_dir"
-printf '1.1.0\n' >"$release_dir/VERSION"
-printf '#!/usr/bin/env bash\nnotifier_version=1.1.0\n' >"$release_dir/chatgpt-update-notifier"
+printf '1.2.0\n' >"$release_dir/VERSION"
+printf '#!/usr/bin/env bash\nnotifier_version=1.2.0\n' >"$release_dir/chatgpt-update-notifier"
 printf '#!/usr/bin/env bash\nprintf installed > %q\n' "$test_home/update-ran" >"$release_dir/install.sh"
-printf 'releases:\n  - version: 1.1.0\n    changes:\n      - Test release\n' >"$release_dir/CHANGELOG.yaml"
-tar -czf "$test_home/release.tar.gz" -C "$test_home/releases" chatgpt-update-notifier-v1.1.0
+printf 'releases:\n  - version: 1.2.0\n    changes:\n      - Test release\n' >"$release_dir/CHANGELOG.yaml"
+tar -czf "$test_home/release.tar.gz" -C "$test_home/releases" chatgpt-update-notifier-v1.2.0
 mkdir -p "$test_home/repo/archive/refs/tags" "$test_home/repo/refs/heads/main"
-cp -- "$test_home/release.tar.gz" "$test_home/repo/archive/refs/tags/v1.1.0.tar.gz"
-printf '1.1.0\n' >"$test_home/repo/refs/heads/main/VERSION"
+cp -- "$test_home/release.tar.gz" "$test_home/repo/archive/refs/tags/v1.2.0.tar.gz"
+printf '1.2.0\n' >"$test_home/repo/refs/heads/main/VERSION"
 unset -f curl
 project_url="file://$test_home/repo"
 latest_version_url="$project_url/refs/heads/main/VERSION"
@@ -672,10 +698,10 @@ printf 'y\n' | update_notifier >/dev/null
 assert_eq "$(<"$test_home/update-ran")" installed
 rm -- "$test_home/update-ran"
 printf '0.9.0\n' >"$release_dir/VERSION"
-tar -czf "$test_home/repo/archive/refs/tags/v1.1.0.tar.gz" -C "$test_home/releases" chatgpt-update-notifier-v1.1.0
+tar -czf "$test_home/repo/archive/refs/tags/v1.2.0.tar.gz" -C "$test_home/releases" chatgpt-update-notifier-v1.2.0
 if update_notifier 2>/dev/null; then fail_test 'mismatched release reported success'; fi
 [[ ! -e $test_home/update-ran ]] || fail_test 'mismatched release ran installer'
-rm -- "$test_home/repo/archive/refs/tags/v1.1.0.tar.gz"
+rm -- "$test_home/repo/archive/refs/tags/v1.2.0.tar.gz"
 if update_notifier 2>/dev/null; then fail_test 'failed release download reported success'; fi
 [[ ! -e $test_home/update-ran ]] || fail_test 'failed download ran installer'
 

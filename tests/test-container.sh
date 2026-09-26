@@ -83,7 +83,7 @@ run_checked_as_user() {
 
 # A fresh install accepts default scan/alert values, a custom 12-second app wait,
 # and the default manual-confirmation mode before approving installation.
-run_checked_as_user $'\n\n12\n\ny\n' "bash $root/install.sh" 'fresh installer run failed'
+run_checked_as_user $'\n\n\n12\n\ny\n' "bash $root/install.sh" 'fresh installer run failed'
 config="$user_home/.config/chatgpt-update-notifier/config"
 binary="$user_home/.local/bin/chatgpt-update-notifier"
 units="$user_home/.config/systemd/user"
@@ -91,6 +91,7 @@ units="$user_home/.config/systemd/user"
   fail_test 'installer did not create the executable and user units'
 grep -qx 'interval_minutes=60' "$config" || fail_test 'installer omitted the default interval'
 grep -qx 'notification_seconds=15' "$config" || fail_test 'installer omitted the default alert duration'
+grep -qx 'play_sound=true' "$config" || fail_test 'installer omitted the default notification sound'
 grep -qx 'shutdown_timeout_seconds=12' "$config" || fail_test 'installer omitted the chosen shutdown timeout'
 grep -qx 'assume_yes=false' "$config" || fail_test 'installer did not default to manual confirmation'
 grep -qx 'stop_app=true' "$config" || fail_test 'installer omitted the safe stop-app default'
@@ -99,11 +100,34 @@ grep -qx 'force_kill=false' "$config" || fail_test 'installer did not default fo
 grep -qx 'restart_app=true' "$config" || fail_test 'installer omitted the restart default'
 grep -qx 'restart_delay_seconds=30' "$config" || fail_test 'installer omitted the restart delay default'
 grep -q '^systemctl --user enable --now chatgpt-update-notifier.timer$' "$mock_log" || fail_test 'installer did not enable the user timer'
+grep -q '^notify-send .*--hint=string:sound-name:message-new-instant' "$mock_log" ||
+  fail_test 'installer readiness alert omitted the default sound hint'
 
 # Reinstall must keep the user's config rather than asking for or replacing values.
 config_before=$(sha256sum "$config")
 run_checked_as_user $'y\n' "bash $root/install.sh" 'reinstall failed'
 [[ $(sha256sum "$config") == "$config_before" ]] || fail_test 'reinstall changed the existing config'
+
+# An older valid config is extended in place: existing bytes and choices stay,
+# every absent key receives its current default, and a second run is a no-op.
+printf '# Keep this old config prefix.\ninterval_minutes=120\nplay_sound=false\n' >"$config"
+chown 65534:65534 "$config"
+old_config_size=$(wc -c <"$config")
+old_config_prefix=$(head -c "$old_config_size" "$config" | sha256sum)
+old_config_checksum=$(sha256sum "$config")
+run_checked_as_user $'n\n' "bash $root/install.sh" 'old-config cancellation failed'
+[[ $(sha256sum "$config") == "$old_config_checksum" ]] || fail_test 'cancelled migration changed the config'
+run_checked_as_user $'y\n' "bash $root/install.sh" 'old-config migration failed'
+[[ $(head -c "$old_config_size" "$config" | sha256sum) == "$old_config_prefix" ]] ||
+  fail_test 'migration rewrote the existing config prefix'
+grep -qx 'interval_minutes=120' "$config" || fail_test 'migration replaced the existing interval'
+grep -qx 'play_sound=false' "$config" || fail_test 'migration replaced the existing sound preference'
+for expected_default in notification_seconds=15 shutdown_timeout_seconds=10 assume_yes=false stop_app=true stop_delay_seconds=30 force_kill=false restart_app=true restart_delay_seconds=30; do
+  [[ $(grep -cx "$expected_default" "$config") == 1 ]] || fail_test "migration did not append exactly one $expected_default"
+done
+migrated_config=$(sha256sum "$config")
+run_checked_as_user $'y\n' "bash $root/install.sh" 'post-migration reinstall failed'
+[[ $(sha256sum "$config") == "$migrated_config" ]] || fail_test 'post-migration reinstall changed a complete config'
 
 # Exercise the real distro dispatch while sudo is mocked, then assert the exact
 # command selected for this image. No ChatGPT GUI process exists in the container.
@@ -120,7 +144,7 @@ esac
 
 # Switch the preserved config to one-click mode and verify its normal sudo
 # authentication is followed by each distro's noninteractive package flags.
-printf 'interval_minutes=60\nnotification_seconds=15\nshutdown_timeout_seconds=12\nassume_yes=true\nstop_app=true\nstop_delay_seconds=0\nforce_kill=false\nrestart_app=true\nrestart_delay_seconds=0\n' >"$config"
+printf 'interval_minutes=60\nnotification_seconds=15\nplay_sound=true\nshutdown_timeout_seconds=12\nassume_yes=true\nstop_app=true\nstop_delay_seconds=0\nforce_kill=false\nrestart_app=true\nrestart_delay_seconds=0\n' >"$config"
 chown 65534:65534 "$config"
 : >"$mock_log"
 run_checked_as_user '' "$binary upgrade" 'one-click upgrade flow failed'
@@ -148,7 +172,8 @@ run_checked_as_user $'y\n' "bash $root/install.sh --uninstall" 'uninstall failed
 # Blank answers keep the default stop/restart choices; explicit answers choose
 # a seven-second warning and permit force close after a clean-shutdown timeout.
 rm -- "$config"
-run_checked_as_user $'\n\n\ny\n\n7\ny\n\ny\n' "bash $root/install.sh" 'one-click onboarding failed'
+run_checked_as_user $'\n\n\n\ny\n\n7\ny\n\ny\n' "bash $root/install.sh" 'one-click onboarding failed'
+grep -qx 'play_sound=true' "$config" || fail_test 'one-click onboarding lost the default notification sound'
 grep -qx 'assume_yes=true' "$config" || fail_test 'one-click onboarding was not saved'
 grep -qx 'stop_app=true' "$config" || fail_test 'one-click onboarding lost stop_app'
 grep -qx 'stop_delay_seconds=7' "$config" || fail_test 'one-click onboarding lost the chosen stop delay'
@@ -159,7 +184,10 @@ run_checked_as_user $'y\n' "bash $root/install.sh --uninstall" 'second uninstall
 # Choosing not to stop ChatGPT skips the force-kill question and collects only
 # the restart countdown that can apply while the app remains open.
 rm -- "$config"
-run_checked_as_user $'\n\n\ny\nn\n\n9\ny\n' "bash $root/install.sh" 'non-stopping one-click onboarding failed'
+: >"$mock_log"
+run_checked_as_user $'\n\nn\n\ny\nn\n\n9\ny\n' "bash $root/install.sh" 'non-stopping one-click onboarding failed'
+grep -qx 'play_sound=false' "$config" || fail_test 'onboarding ignored the disabled notification sound'
+if grep -q '^notify-send .*sound-name' "$mock_log"; then fail_test 'installer played sound when play_sound=false'; fi
 grep -qx 'assume_yes=true' "$config" || fail_test 'non-stopping onboarding lost one-click mode'
 grep -qx 'stop_app=false' "$config" || fail_test 'non-stopping onboarding changed stop_app'
 grep -qx 'force_kill=false' "$config" || fail_test 'force_kill was enabled without its onboarding question'

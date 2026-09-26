@@ -4,23 +4,35 @@ set -euo pipefail
 # app names this tool in messages and in its per-user directories.
 app=chatgpt-update-notifier
 # notifier_version must match VERSION in the same release archive.
-notifier_version=1.0.0
-# notification_seconds is the safe default before a config is read, including config-error alerts.
-notification_seconds=15
-# shutdown_timeout_seconds limits how long a terminal upgrade waits for ChatGPT to exit cleanly.
-shutdown_timeout_seconds=10
-# assume_yes enables the optional one-click flow after the user presses Install update.
-assume_yes=false
-# stop_app controls whether one-click mode tries to close a running app before upgrading.
-stop_app=true
-# stop_delay_seconds gives the user time to save work before one-click mode closes the app.
-stop_delay_seconds=30
-# force_kill permits SIGKILL after a one-click clean-shutdown timeout only when stop_app=true.
-force_kill=false
-# restart_app restores an app that was running when the upgrade began.
-restart_app=true
-# restart_delay_seconds gives the user time to save when one-click mode must restart an app left open.
-restart_delay_seconds=30
+notifier_version=1.1.0
+# config_defaults is the ordered schema used by both parsing and append-only migrations.
+# Keeping every default here prevents a new setting from acquiring different fallback values.
+config_defaults=(
+  interval_minutes=60          # Check once an hour unless the user chooses another interval.
+  notification_seconds=15      # Keep alerts visible for fifteen seconds by default.
+  play_sound=true              # Ask the desktop to play its standard notification sound.
+  shutdown_timeout_seconds=10  # Give ChatGPT ten seconds to close normally.
+  assume_yes=false             # Keep terminal confirmation enabled unless explicitly disabled.
+  stop_app=true                # Prefer closing a running app before a one-click update.
+  stop_delay_seconds=30        # Give the user thirty seconds to save work before closing.
+  force_kill=false             # Never force-close the app without explicit consent.
+  restart_app=true             # Restore an app that was running before the update.
+  restart_delay_seconds=30     # Give the user thirty seconds before restarting an open app.
+)
+# missing_config_defaults is rebuilt by read_config for the installer's migration check.
+missing_config_defaults=()
+
+# Restore every runtime preference from the single schema above.
+# entry is trusted project data; key and value split its first equals sign.
+set_config_defaults() {
+  local entry key value
+  for entry in "${config_defaults[@]}"; do
+    key=${entry%%=*}
+    value=${entry#*=}
+    printf -v "$key" '%s' "$value"
+  done
+}
+set_config_defaults
 # upgrade_app_state lets the automatic completion alert describe any remaining app action.
 upgrade_app_state=unchanged
 # upgrade_step_one and upgrade_step_two hold the exact package commands shown and run.
@@ -39,6 +51,8 @@ cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/$app"
 project_url='https://github.com/aakashH242/chatgpt-update-notifier'
 # latest_version_url is the small remote VERSION file checked on each timer tick.
 latest_version_url='https://raw.githubusercontent.com/aakashH242/chatgpt-update-notifier/refs/heads/main/VERSION'
+# notification_options holds the shared notify-send arguments rebuilt for each alert.
+notification_options=()
 
 # Write a diagnostic with a consistent prefix; callers decide whether to retry or stop.
 error() { printf '%s: %s\n' "$app" "$*" >&2; }
@@ -53,6 +67,19 @@ valid_uint() {
 # Accept only the two literal boolean values supported by the flat config format.
 valid_bool() { [[ $1 == true || $1 == false ]]; }
 
+# Build the options shared by every alert. sound-name is a standard desktop hint;
+# notification servers that do not support sounds may safely ignore it.
+set_notification_options() {
+  notification_options=(--app-name='ChatGPT Update Notifier' --expire-time="$((notification_seconds * 1000))")
+  [[ $play_sound == true ]] && notification_options+=(--hint=string:sound-name:message-new-instant)
+}
+
+# Send a non-actionable alert with the current display-time and sound preferences.
+send_notification() {
+  set_notification_options
+  notify-send "${notification_options[@]}" "$@"
+}
+
 # Read the host distribution and set distro for package-manager dispatch.
 # Only the four distributions with supported package paths are accepted.
 detect_distro() {
@@ -66,19 +93,13 @@ detect_distro() {
 
 # Parse the flat config without executing it. Set every supported runtime preference.
 # Return 2 for a missing/unreadable file and 1 for malformed data so warn_config can explain it.
-# seen rejects duplicates before each key is validated. Optional keys keep
-# safe defaults when absent, which preserves configs created by older versions.
+# seen rejects duplicates before each key is validated. Missing keys keep the
+# schema defaults and are reported for an installer migration.
 read_config() {
-  notification_seconds=15
-  shutdown_timeout_seconds=10
-  assume_yes=false
-  stop_app=true
-  stop_delay_seconds=30
-  force_kill=false
-  restart_app=true
-  restart_delay_seconds=30
+  set_config_defaults
+  missing_config_defaults=()
   [[ -f $config_file && -r $config_file ]] || { error "Missing or unreadable config: $config_file"; return 2; }
-  local line key value
+  local line key value entry default_key
   local -A seen=()
   while IFS= read -r line || [[ -n $line ]]; do
     case "$line" in ''|\#*) continue ;; esac
@@ -107,9 +128,10 @@ read_config() {
         valid_uint "$value" 1 60 || { error 'shutdown_timeout_seconds must be between 1 and 60'; return 1; }
         shutdown_timeout_seconds=$((10#$value))
         ;;
-      assume_yes|stop_app|force_kill|restart_app)
+      play_sound|assume_yes|stop_app|force_kill|restart_app)
         valid_bool "$value" || { error "$key must be true or false"; return 1; }
         case $key in
+          play_sound) play_sound=$value ;;
           assume_yes) assume_yes=$value ;;
           stop_app) stop_app=$value ;;
           force_kill) force_kill=$value ;;
@@ -127,7 +149,23 @@ read_config() {
       *) error "Invalid or duplicate config entry: $line"; return 1 ;;
     esac
   done <"$config_file"
-  [[ -n ${seen[interval_minutes]+x} ]] || { error 'Missing interval_minutes'; return 1; }
+  for entry in "${config_defaults[@]}"; do
+    default_key=${entry%%=*}
+    [[ -n ${seen[$default_key]+x} ]] || missing_config_defaults+=("$entry")
+  done
+}
+
+# Validate the current config again, then append only defaults for absent keys.
+# Existing bytes and values are never rewritten. Symlinks are rejected to avoid
+# appending through an unexpected path during installation.
+append_missing_config_defaults() {
+  read_config || return
+  ((${#missing_config_defaults[@]})) || return 0
+  [[ -w $config_file && ! -L $config_file ]] || {
+    error "Cannot append defaults to config: $config_file"
+    return 1
+  }
+  printf '\n%s\n' "${missing_config_defaults[@]}" >>"$config_file"
 }
 
 # Tell the user why app checks paused. A bad config cannot supply its own timeout,
@@ -136,7 +174,7 @@ read_config() {
 warn_config() {
   local problem='Config is corrupt'
   [[ $1 == 2 ]] && problem='Config is missing or unreadable'
-  notify-send --app-name='ChatGPT Update Notifier' --icon=dialog-warning --expire-time="$((notification_seconds * 1000))" \
+  send_notification --icon=dialog-warning \
     'ChatGPT update checks paused' "$problem. Please reinstall from: $project_url" ||
     error 'Could not display the config warning notification'
 }
@@ -283,8 +321,8 @@ open_terminal() {
 # and never a reason to write a silence marker.
 notify_action() {
   local selected_action='' notify_status=0
-  selected_action=$(timeout "${notification_seconds}s" notify-send --app-name='ChatGPT Update Notifier' \
-    --expire-time="$((notification_seconds * 1000))" "$@") || notify_status=$?
+  set_notification_options
+  selected_action=$(timeout "${notification_seconds}s" notify-send "${notification_options[@]}" "$@") || notify_status=$?
   if (( notify_status )); then
     (( notify_status == 124 )) || error 'Desktop notification failed; the reminder remains eligible'
     return 0
@@ -320,7 +358,7 @@ notify_update() {
     silence) printf '%s\n' "$candidate" >"$state_dir/silenced-version" ;;
     install) open_terminal upgrade || {
       error "Could not open a terminal. Run: $command_text"
-      notify-send --expire-time="$((notification_seconds * 1000))" 'Open a terminal to update ChatGPT' "$command_text" || true
+      send_notification 'Open a terminal to update ChatGPT' "$command_text" || true
     } ;;
   esac
 }
@@ -573,8 +611,7 @@ start_chatgpt() {
 # Show a non-actionable status alert without allowing notification failures to
 # alter the upgrade result. The configured popup timeout is reused consistently.
 notify_upgrade_status() {
-  notify-send --app-name='ChatGPT Update Notifier' --icon=software-update-available \
-    --expire-time="$((notification_seconds * 1000))" "$1" "$2" || true
+  send_notification --icon=software-update-available "$1" "$2" || true
 }
 
 # Count down while the selected old app remains open. Returning failure means it

@@ -190,8 +190,10 @@ step '2/3' 'Choose preferences'
 # The validated settings are reviewed below. Older configs inherit safe defaults
 # for preferences introduced after their original installation.
 reset_config=0
+missing_config_count=0
 interval=60
 notification_seconds=15
+play_sound=true
 shutdown_timeout_seconds=10
 assume_yes=false
 stop_app=true
@@ -201,8 +203,8 @@ restart_app=true
 restart_delay_seconds=30
 if [[ -e $config || -L $config ]]; then
   [[ -f $config ]] || fail "Expected a config file at $config."
-  if settings=$(bash -c '. "$1"; read_config; printf "%s %s %s %s %s %s %s %s %s" "$interval_minutes" "$notification_seconds" "$shutdown_timeout_seconds" "$assume_yes" "$stop_app" "$stop_delay_seconds" "$force_kill" "$restart_app" "$restart_delay_seconds"' _ "$source_dir/$name"); then
-    read -r interval notification_seconds shutdown_timeout_seconds assume_yes stop_app stop_delay_seconds force_kill restart_app restart_delay_seconds <<<"$settings"
+  if settings=$(bash -c '. "$1"; read_config; printf "%s %s %s %s %s %s %s %s %s %s %s" "$interval_minutes" "$notification_seconds" "$play_sound" "$shutdown_timeout_seconds" "$assume_yes" "$stop_app" "$stop_delay_seconds" "$force_kill" "$restart_app" "$restart_delay_seconds" "${#missing_config_defaults[@]}"' _ "$source_dir/$name"); then
+    read -r interval notification_seconds play_sound shutdown_timeout_seconds assume_yes stop_app stop_delay_seconds force_kill restart_app restart_delay_seconds missing_config_count <<<"$settings"
     say "Keeping your existing config: $config"
     say 'Edit its settings later; changes take effect the next time the notifier runs.'
   else
@@ -220,6 +222,7 @@ else
   ask_integer 'Notification seconds' 15
   notification_seconds=$integer_answer
   (( notification_seconds >= 1 && notification_seconds <= 600 )) || fail 'Use 1–600 seconds.'
+  if ! confirm 'Play a sound when notifications appear?' yes; then play_sound=false; fi
   say 'ChatGPT gets 10 seconds to close cleanly by default; choose 1–60 seconds.'
   ask_integer 'Shutdown wait seconds' 10
   shutdown_timeout_seconds=$integer_answer
@@ -258,6 +261,7 @@ say "App: ChatGPT on $distro"
 say "Notifier version: $source_version"
 say "Interval: $interval minutes"
 say "Alert display: $notification_seconds seconds"
+say "Notification sound: $play_sound"
 say "App shutdown wait: $shutdown_timeout_seconds seconds"
 say "One-click mode: $assume_yes"
 if [[ $assume_yes == true ]]; then
@@ -272,6 +276,13 @@ say "Files: $binary, $units/$name.{service,timer}, $config"
 if ((${#missing[@]})); then say "System packages (with consent): ${dependency_command[*]}"; fi
 confirm 'Install and enable the user timer?' || { say 'Cancelled; nothing changed.'; exit 0; }
 
+# Existing valid configs are migrated only after approval and only when the
+# parser found missing keys. The notifier owns validation and default values.
+if (( missing_config_count )); then
+  bash -c '. "$1"; append_missing_config_defaults' _ "$source_dir/$name" ||
+    fail 'Could not update the existing config safely.'
+fi
+
 if ((${#missing[@]})); then
   command -v sudo >/dev/null || fail 'sudo is required to install missing system packages.'
   confirm 'Install the missing system packages now?' || fail 'Missing packages were not installed; setup stopped.'
@@ -280,12 +291,12 @@ if ((${#missing[@]})); then
 fi
 
 # The timer ticks every 15 minutes; the executable enforces the editable interval.
-# Reinstall replaces executable/units but writes config only on first install or reset.
+# Fresh/reset configs are written here; valid older configs were only appended above.
 bash -n "$source_dir/$name" || fail 'The notifier script failed its syntax check.'
 mkdir -p "${binary%/*}" "$units" "${config%/*}"
 if (( reset_config )) || [[ ! -e $config ]]; then
-  printf '# Checks: 15–10080 minutes in steps of 15; alert: 1–600 seconds; shutdown: 1–60 seconds; delays: 0–180 seconds\ninterval_minutes=%s\nnotification_seconds=%s\nshutdown_timeout_seconds=%s\nassume_yes=%s\nstop_app=%s\nstop_delay_seconds=%s\nforce_kill=%s\nrestart_app=%s\nrestart_delay_seconds=%s\n' \
-    "$interval" "$notification_seconds" "$shutdown_timeout_seconds" "$assume_yes" "$stop_app" "$stop_delay_seconds" "$force_kill" "$restart_app" "$restart_delay_seconds" >"$config"
+  printf '# Checks: 15–10080 minutes in steps of 15; alert: 1–600 seconds; shutdown: 1–60 seconds; delays: 0–180 seconds\ninterval_minutes=%s\nnotification_seconds=%s\nplay_sound=%s\nshutdown_timeout_seconds=%s\nassume_yes=%s\nstop_app=%s\nstop_delay_seconds=%s\nforce_kill=%s\nrestart_app=%s\nrestart_delay_seconds=%s\n' \
+    "$interval" "$notification_seconds" "$play_sound" "$shutdown_timeout_seconds" "$assume_yes" "$stop_app" "$stop_delay_seconds" "$force_kill" "$restart_app" "$restart_delay_seconds" >"$config"
 fi
 install -m 755 "$source_dir/$name" "$binary"
 printf '[Unit]\nDescription=Check for ChatGPT desktop updates\n\n[Service]\nType=oneshot\nExecStart=%%h/.local/bin/%s\n' "$name" >"$units/$name.service"
@@ -294,7 +305,10 @@ systemctl --user daemon-reload
 systemctl --user enable --now "$name.timer"
 systemctl --user restart "$name.timer"
 say "${green}✓ Installed.${reset} The timer is active; the first check is at the next 15-minute tick."
-if ! notify-send --app-name='ChatGPT Update Notifier' --expire-time="$((notification_seconds * 1000))" 'ChatGPT Update Notifier is ready' 'Desktop notifications are working.'; then
+# Use the same display and sound preferences just written to the runtime config.
+ready_notification_options=(--app-name='ChatGPT Update Notifier' --expire-time="$((notification_seconds * 1000))")
+[[ $play_sound == true ]] && ready_notification_options+=(--hint=string:sound-name:message-new-instant)
+if ! notify-send "${ready_notification_options[@]}" 'ChatGPT Update Notifier is ready' 'Desktop notifications are working.'; then
   say 'Warning: the desktop notification service did not respond. Alerts may not appear until it is available.'
 fi
 say "Config: $config"
