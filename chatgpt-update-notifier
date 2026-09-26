@@ -19,6 +19,10 @@ config_defaults=(
   restart_app=true             # Restore an app that was running before the update.
   restart_delay_seconds=30     # Give the user thirty seconds before restarting an open app.
 )
+# These variables are assigned from config_defaults through printf -v. Declaring them
+# explicitly keeps nounset behavior and static analysis clear without repeating values.
+declare interval_minutes notification_seconds play_sound shutdown_timeout_seconds
+declare assume_yes stop_app stop_delay_seconds force_kill restart_app restart_delay_seconds
 # missing_config_defaults is rebuilt by read_config for the installer's migration check.
 missing_config_defaults=()
 
@@ -93,8 +97,9 @@ detect_distro() {
 
 # Parse the flat config without executing it. Set every supported runtime preference.
 # Return 2 for a missing/unreadable file and 1 for malformed data so warn_config can explain it.
-# seen rejects duplicates before each key is validated. Missing keys keep the
-# schema defaults and are reported for an installer migration.
+# seen holds validated values until the whole file passes. This prevents an early
+# automatic-mode value from surviving when a later line makes the config invalid.
+# Missing keys keep the schema defaults and are reported for installer maintenance.
 read_config() {
   set_config_defaults
   missing_config_defaults=()
@@ -110,48 +115,42 @@ read_config() {
     key=${BASH_REMATCH[1]}
     value=${BASH_REMATCH[2]}
     [[ -z ${seen[$key]+x} ]] || { error "Invalid or duplicate config entry: $line"; return 1; }
-    seen[$key]=1
     case $key in
       interval_minutes)
         valid_uint "$value" 15 10080 || { error 'interval_minutes must be 15–10080'; return 1; }
-        interval_minutes=$((10#$value))
-        (( interval_minutes % 15 == 0 )) || {
+        value=$((10#$value))
+        (( value % 15 == 0 )) || {
           error 'interval_minutes must be a multiple of 15 between 15 and 10080'
           return 1
         }
+        seen[$key]=$value
         ;;
       notification_seconds)
         valid_uint "$value" 1 600 || { error 'notification_seconds must be between 1 and 600'; return 1; }
-        notification_seconds=$((10#$value))
+        seen[$key]=$((10#$value))
         ;;
       shutdown_timeout_seconds)
         valid_uint "$value" 1 60 || { error 'shutdown_timeout_seconds must be between 1 and 60'; return 1; }
-        shutdown_timeout_seconds=$((10#$value))
+        seen[$key]=$((10#$value))
         ;;
       play_sound|assume_yes|stop_app|force_kill|restart_app)
         valid_bool "$value" || { error "$key must be true or false"; return 1; }
-        case $key in
-          play_sound) play_sound=$value ;;
-          assume_yes) assume_yes=$value ;;
-          stop_app) stop_app=$value ;;
-          force_kill) force_kill=$value ;;
-          restart_app) restart_app=$value ;;
-        esac
+        seen[$key]=$value
         ;;
       stop_delay_seconds|restart_delay_seconds)
         valid_uint "$value" 0 180 || { error "$key must be between 0 and 180"; return 1; }
-        if [[ $key == stop_delay_seconds ]]; then
-          stop_delay_seconds=$((10#$value))
-        else
-          restart_delay_seconds=$((10#$value))
-        fi
+        seen[$key]=$((10#$value))
         ;;
       *) error "Invalid or duplicate config entry: $line"; return 1 ;;
     esac
   done <"$config_file"
   for entry in "${config_defaults[@]}"; do
     default_key=${entry%%=*}
-    [[ -n ${seen[$default_key]+x} ]] || missing_config_defaults+=("$entry")
+    if [[ -n ${seen[$default_key]+x} ]]; then
+      printf -v "$default_key" '%s' "${seen[$default_key]}"
+    else
+      missing_config_defaults+=("$entry")
+    fi
   done
 }
 

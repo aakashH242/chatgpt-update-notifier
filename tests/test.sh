@@ -98,6 +98,11 @@ for delay_key in stop_delay_seconds restart_delay_seconds; do
 done
 printf 'interval_minutes=60\nforce_kill=false\nforce_kill=true\n' >"$config"
 if read_config 2>/dev/null; then fail_test 'accepted duplicate force_kill'; fi
+# A late parse failure must not retain earlier values that enable unattended actions.
+printf 'assume_yes=true\nforce_kill=true\nthis is invalid\n' >"$config"
+if read_config 2>/dev/null; then fail_test 'accepted a partially valid corrupt config'; fi
+assert_eq "$assume_yes" false
+assert_eq "$force_kill" false
 notify-send() { printf '%s\n' "$*" >"$test_home/config-alert"; }
 rm -- "$config"
 run_check 2>/dev/null
