@@ -282,6 +282,7 @@ opened=0
 open_terminal() { [[ $1 == upgrade ]] || fail_test 'wrong terminal command'; opened=$((opened + 1)); }
 notification_seconds=600
 play_sound=false
+set_notification_options || fail_test 'disabled sound made notification option setup fail'
 timeout() { printf '%s\n' "$@" >"$test_home/notify-args"; printf 'install'; }
 notify_update
 assert_eq "$opened" 1
