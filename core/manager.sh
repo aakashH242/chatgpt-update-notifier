@@ -32,15 +32,24 @@ native_dialog() {
   return 1
 }
 
-# Show a tag/label choice list in the selected native toolkit and print only its
-# stable tag. Every manager chooser uses this helper so KDialog and Zenity stay aligned.
+# Show a consistently sized tag/label list and print only its stable tag. Native
+# list dialogs already activate a row on double-click; the prompt makes that shortcut visible.
 gui_choice() {
-  local title=$1 prompt=$2 first_column=$3 second_column=$4
+  local title=$1 prompt=$2 first_column=$3 second_column=$4 rows height
   shift 4
+  rows=$(($# / 2))
+  height=$((240 + rows * 28))
+  (( height < 320 )) && height=320
+  (( height > 560 )) && height=560
+  prompt+=$'\n\nDouble-click a row, or select it and choose Select.'
   case $dialog_app in
-    kdialog) kdialog --title "$title" --menu "$prompt" "$@" ;;
+    kdialog)
+      kdialog --title "$title" --geometry "760x$height" --ok-label Select --cancel-label Cancel \
+        --menu "$prompt" "$@"
+      ;;
     zenity)
-      zenity --list --title="$title" --text="$prompt" --width=680 --height=480 \
+      zenity --list --title="$title" --text="$prompt" --width=760 --height="$height" \
+        --ok-label=Select --cancel-label=Cancel \
         --hide-column=1 --print-column=1 --column="$first_column" --column="$second_column" "$@"
       ;;
   esac

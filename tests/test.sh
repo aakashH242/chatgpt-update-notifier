@@ -614,8 +614,11 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
   printf '26.901.1\n' >"$state_dir/last-available-version"
   dialog_app=kdialog
   kdialog() { printf '%s\n' "$*"; }
-  [[ $(gui_manager_action 26.900.1) == *'clear Clear silences'* ]] || fail_test 'native manager omitted clear silences'
-  [[ $(gui_manager_action 26.900.1) == *'settings Settings'* ]] || fail_test 'native manager omitted settings'
+  native_manager=$(gui_manager_action 26.900.1)
+  [[ $native_manager == *'clear Clear silences'* ]] || fail_test 'native manager omitted clear silences'
+  [[ $native_manager == *'settings Settings'* ]] || fail_test 'native manager omitted settings'
+  [[ $native_manager == *'--geometry 760x380 --ok-label Select --cancel-label Cancel'*'Double-click a row'* ]] ||
+    fail_test 'native manager omitted the scaled selectable-list affordances'
   gui_manager_action() { printf 'clear'; }
   gui_message() { printf '%s|%s' "$1" "$2" >"$test_home/clear-gui-message"; }
   current_chatgpt_version() { printf '26.900.1'; }
@@ -641,10 +644,14 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
   native_settings=$(gui_settings_action)
   [[ $native_settings == *'interval_minutes Check interval: 60'*'save Save changes'*'cancel Cancel without saving'* ]] ||
     fail_test 'KDialog settings chooser omitted values or save controls'
+  [[ $native_settings == *'--geometry 760x560 --ok-label Select --cancel-label Cancel'*'Double-click a row'* ]] ||
+    fail_test 'KDialog settings chooser used the wrong scale or controls'
   [[ $(gui_manager_setting_value interval_minutes) == *'--inputbox'*'15–10080'*' 60' ]] ||
     fail_test 'KDialog numeric setting used the wrong control'
   [[ $(gui_manager_setting_value play_sound) == *'--menu true or false'*'true Enabled (true)'*'false Disabled (false)'* ]] ||
     fail_test 'KDialog boolean setting used the wrong choices'
+  [[ $(gui_manager_setting_value play_sound) == *'--geometry 760x320'* ]] ||
+    fail_test 'KDialog boolean setting was not compactly scaled'
   manager_settings[play_sound]=false
   [[ $(gui_manager_setting_value play_sound) == *'--menu true or false'*'false Disabled (false)'*'true Enabled (true)'* ]] ||
     fail_test 'KDialog boolean setting did not prefer the saved value'
@@ -653,7 +660,10 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
   unset -f kdialog
   dialog_app=zenity
   zenity() { printf '%s\n' "$*"; }
-  [[ $(gui_settings_action) == *'--column=Setting --column=Value'*'rollback_versions Rollback versions to keep: 3'* ]] ||
+  zenity_settings=$(gui_settings_action)
+  [[ $zenity_settings == *'--width=760 --height=560 --ok-label=Select --cancel-label=Cancel'* ]] ||
+    fail_test 'Zenity settings chooser used the wrong scale or controls'
+  [[ $zenity_settings == *'--column=Setting --column=Value'*'rollback_versions Rollback versions to keep: 3'* ]] ||
     fail_test 'Zenity settings chooser omitted columns or values'
   [[ $(gui_manager_setting_value notification_seconds) == *'--entry'*'--entry-text=15'* ]] ||
     fail_test 'Zenity numeric setting used the wrong control'
