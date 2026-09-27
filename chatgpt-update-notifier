@@ -4,7 +4,7 @@ set -euo pipefail
 # app names this tool in messages and in its per-user directories.
 app=chatgpt-update-notifier
 # notifier_version must match VERSION in the same release archive.
-notifier_version=1.2.0
+notifier_version=1.2.1
 # core_modules is the complete, ordered set of version-matched implementation files.
 # Keeping one list prevents install and self-update checks inside this script from drifting.
 core_modules=(package-operation.sh rollback.sh manager.sh)

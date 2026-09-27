@@ -305,11 +305,11 @@ assert_eq "$(<"$state_dir/silenced-version")" "$available"
 curl() { [[ ${CURL_FAIL:-0} == 0 ]] || return 1; printf '%s' "${REMOTE_VERSION:-1.2.0}"; }
 notifier_alerts=0
 notify_notifier_update() { notifier_alerts=$((notifier_alerts + 1)); }
-REMOTE_VERSION=1.2.1 check_notifier_update
-REMOTE_VERSION=1.2.1 check_notifier_update
+REMOTE_VERSION=1.2.2 check_notifier_update
+REMOTE_VERSION=1.2.2 check_notifier_update
 assert_eq "$notifier_alerts" 2
-printf '1.2.1\n' >"$state_dir/silenced-notifier-version"
-REMOTE_VERSION=1.2.1 check_notifier_update
+printf '1.2.2\n' >"$state_dir/silenced-notifier-version"
+REMOTE_VERSION=1.2.2 check_notifier_update
 assert_eq "$notifier_alerts" 2
 REMOTE_VERSION=1.3.0 check_notifier_update
 assert_eq "$notifier_alerts" 3
@@ -551,11 +551,11 @@ installed_layout="$test_home/installed-layout"
 installed_data="$installed_layout/data"
 installed_home="$installed_layout/home"
 installed_bin="$installed_home/.local/bin"
-mkdir -p "$installed_bin/core" "$installed_data/chatgpt-update-notifier/1.2.0/core"
+mkdir -p "$installed_bin/core" "$installed_data/chatgpt-update-notifier/1.2.1/core"
 cp "$root/chatgpt-update-notifier" "$installed_bin/chatgpt-update-notifier"
 cp "$root/core/package-operation.sh" "$root/core/rollback.sh" "$root/core/manager.sh" \
-  "$installed_data/chatgpt-update-notifier/1.2.0/core/"
-printf '1.2.0\n' >"$installed_bin/VERSION"
+  "$installed_data/chatgpt-update-notifier/1.2.1/core/"
+printf '1.2.1\n' >"$installed_bin/VERSION"
 printf 'printf wrong >"$MODULE_MARKER"\n' >"$installed_bin/core/package-operation.sh"
 printf 'printf wrong >"$MODULE_MARKER"\n' >"$installed_bin/core/rollback.sh"
 printf 'printf wrong >>"$MODULE_MARKER"\n' >"$installed_bin/core/manager.sh"
@@ -565,13 +565,13 @@ HOME="$installed_home" MODULE_MARKER="$installed_layout/wrong-module" XDG_DATA_H
 [[ ! -e $installed_layout/wrong-module ]] || fail_test 'installed binary sourced an unrelated adjacent core directory'
 
 # Root-only diagnostics remain available when an installed companion is damaged.
-mv "$installed_data/chatgpt-update-notifier/1.2.0/core/package-operation.sh" \
-  "$installed_data/chatgpt-update-notifier/1.2.0/core/package-operation.sh.missing"
+mv "$installed_data/chatgpt-update-notifier/1.2.1/core/package-operation.sh" \
+  "$installed_data/chatgpt-update-notifier/1.2.1/core/package-operation.sh.missing"
 version_output=$(HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash "$installed_bin/chatgpt-update-notifier" --version)
 help_output=$(HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash "$installed_bin/chatgpt-update-notifier" --help)
-[[ $version_output == *'1.2.0'* && $help_output == *'Usage:'* ]] || fail_test 'diagnostics required a healthy core module'
-mv "$installed_data/chatgpt-update-notifier/1.2.0/core/package-operation.sh.missing" \
-  "$installed_data/chatgpt-update-notifier/1.2.0/core/package-operation.sh"
+[[ $version_output == *'1.2.1'* && $help_output == *'Usage:'* ]] || fail_test 'diagnostics required a healthy core module'
+mv "$installed_data/chatgpt-update-notifier/1.2.1/core/package-operation.sh.missing" \
+  "$installed_data/chatgpt-update-notifier/1.2.1/core/package-operation.sh"
 
 # A matching checkout VERSION selects only its adjacent modules. Missing source
 # components must fail instead of silently mixing with a previous installation.
@@ -614,8 +614,11 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
   printf '26.901.1\n' >"$state_dir/last-available-version"
   dialog_app=kdialog
   kdialog() { printf '%s\n' "$*"; }
-  [[ $(gui_manager_action 26.900.1) == *'clear Clear silences'* ]] || fail_test 'native manager omitted clear silences'
-  [[ $(gui_manager_action 26.900.1) == *'settings Settings'* ]] || fail_test 'native manager omitted settings'
+  native_manager=$(gui_manager_action 26.900.1)
+  [[ $native_manager == *'clear Clear silences'* ]] || fail_test 'native manager omitted clear silences'
+  [[ $native_manager == *'settings Settings'* ]] || fail_test 'native manager omitted settings'
+  [[ $native_manager == *'--geometry 760x380 --ok-label Select --cancel-label Cancel'*'Double-click a row'* ]] ||
+    fail_test 'native manager omitted the scaled selectable-list affordances'
   gui_manager_action() { printf 'clear'; }
   gui_message() { printf '%s|%s' "$1" "$2" >"$test_home/clear-gui-message"; }
   current_chatgpt_version() { printf '26.900.1'; }
@@ -641,10 +644,14 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
   native_settings=$(gui_settings_action)
   [[ $native_settings == *'interval_minutes Check interval: 60'*'save Save changes'*'cancel Cancel without saving'* ]] ||
     fail_test 'KDialog settings chooser omitted values or save controls'
+  [[ $native_settings == *'--geometry 760x560 --ok-label Select --cancel-label Cancel'*'Double-click a row'* ]] ||
+    fail_test 'KDialog settings chooser used the wrong scale or controls'
   [[ $(gui_manager_setting_value interval_minutes) == *'--inputbox'*'15–10080'*' 60' ]] ||
     fail_test 'KDialog numeric setting used the wrong control'
   [[ $(gui_manager_setting_value play_sound) == *'--menu true or false'*'true Enabled (true)'*'false Disabled (false)'* ]] ||
     fail_test 'KDialog boolean setting used the wrong choices'
+  [[ $(gui_manager_setting_value play_sound) == *'--geometry 760x320'* ]] ||
+    fail_test 'KDialog boolean setting was not compactly scaled'
   manager_settings[play_sound]=false
   [[ $(gui_manager_setting_value play_sound) == *'--menu true or false'*'false Disabled (false)'*'true Enabled (true)'* ]] ||
     fail_test 'KDialog boolean setting did not prefer the saved value'
@@ -653,7 +660,10 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
   unset -f kdialog
   dialog_app=zenity
   zenity() { printf '%s\n' "$*"; }
-  [[ $(gui_settings_action) == *'--column=Setting --column=Value'*'rollback_versions Rollback versions to keep: 3'* ]] ||
+  zenity_settings=$(gui_settings_action)
+  [[ $zenity_settings == *'--width=760 --height=560 --ok-label=Select --cancel-label=Cancel'* ]] ||
+    fail_test 'Zenity settings chooser used the wrong scale or controls'
+  [[ $zenity_settings == *'--column=Setting --column=Value'*'rollback_versions Rollback versions to keep: 3'* ]] ||
     fail_test 'Zenity settings chooser omitted columns or values'
   [[ $(gui_manager_setting_value notification_seconds) == *'--entry'*'--entry-text=15'* ]] ||
     fail_test 'Zenity numeric setting used the wrong control'
