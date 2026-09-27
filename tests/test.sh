@@ -133,6 +133,49 @@ if read_config 2>/dev/null; then fail_test 'executed or accepted config as shell
 [[ ! -e $test_home/never-run ]] || fail_test 'executed config content'
 printf 'interval_minutes=60\n' >"$config"
 
+# Settings persistence validates the complete schema before atomically replacing
+# the live file. Invalid, incomplete, failed, or symlink targets keep old bytes.
+read_config
+declare -A proposed_config=()
+for entry in "${config_defaults[@]}"; do
+  key=${entry%%=*}
+  proposed_config[$key]=${!key}
+done
+proposed_config[interval_minutes]=75
+proposed_config[play_sound]=false
+save_config_values proposed_config
+grep -qx 'interval_minutes=75' "$config" || fail_test 'settings save omitted the new interval'
+grep -qx 'play_sound=false' "$config" || fail_test 'settings save omitted the new sound value'
+assert_eq "$(stat -c %a "$config")" 600
+saved_config=$(sha256sum "$config")
+proposed_config[interval_minutes]=16
+if save_config_values proposed_config 2>/dev/null; then fail_test 'settings save accepted an invalid interval'; fi
+assert_eq "$(sha256sum "$config")" "$saved_config"
+proposed_config[interval_minutes]=75
+unset 'proposed_config[restart_app]'
+if save_config_values proposed_config 2>/dev/null; then fail_test 'settings save accepted an incomplete schema'; fi
+assert_eq "$(sha256sum "$config")" "$saved_config"
+proposed_config[restart_app]=true
+mv() { return 1; }
+if save_config_values proposed_config 2>/dev/null; then fail_test 'settings save ignored atomic replacement failure'; fi
+unset -f mv
+assert_eq "$(sha256sum "$config")" "$saved_config"
+[[ -z $(find "${config%/*}" -maxdepth 1 -name '.config.*' -print -quit) ]] || fail_test 'failed settings save left a temporary config'
+printf() {
+  if [[ ${1:-} == %s && ${2:-} == *$'notification_seconds='* ]]; then return 1; fi
+  builtin printf "$@"
+}
+if save_config_values proposed_config 2>/dev/null; then fail_test 'settings save published a partial write'; fi
+unset -f printf
+assert_eq "$(sha256sum "$config")" "$saved_config"
+[[ -z $(find "${config%/*}" -maxdepth 1 -name '.config.*' -print -quit) ]] || fail_test 'partial settings write left a temporary config'
+mv -- "$config" "$config.real"
+ln -s "${config##*/}.real" "$config"
+if save_config_values proposed_config 2>/dev/null; then fail_test 'settings save replaced a config symlink'; fi
+assert_eq "${saved_config%% *}" "$(sha256sum "$config.real" | cut -d ' ' -f1)"
+rm -- "$config"
+mv -- "$config.real" "$config"
+
 rpm() { [[ $1 == -q ]] && printf '0:26.900.1-1.x86_64'; }
 dnf() { [[ ${DNF_FAIL:-0} == 0 ]] || return 1; printf '%s' "${DNF_RESULT:-}"; }
 DNF_RESULT='0:26.901.1-1.x86_64' check_fedora
@@ -572,6 +615,7 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
   dialog_app=kdialog
   kdialog() { printf '%s\n' "$*"; }
   [[ $(gui_manager_action 26.900.1) == *'clear Clear silences'* ]] || fail_test 'native manager omitted clear silences'
+  [[ $(gui_manager_action 26.900.1) == *'settings Settings'* ]] || fail_test 'native manager omitted settings'
   gui_manager_action() { printf 'clear'; }
   gui_message() { printf '%s|%s' "$1" "$2" >"$test_home/clear-gui-message"; }
   current_chatgpt_version() { printf '26.900.1'; }
@@ -580,6 +624,92 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
     fail_test 'native manager did not clear both silence markers'
   [[ -e $state_dir/last-available-version ]] || fail_test 'clear silences removed last-known update state'
   grep -q 'Silences cleared' "$test_home/clear-gui-message" || fail_test 'native manager did not confirm cleared silences'
+)
+
+# Native settings stage edits until Save, and Cancel after an invalid value keeps
+# the original file. Manager dispatch reaches the settings editor directly.
+(
+  . "$root/chatgpt-update-notifier"
+  config_file="$test_home/gui-settings-config"
+  set_config_defaults
+  declare -A initial_settings=()
+  for entry in "${config_defaults[@]}"; do key=${entry%%=*}; initial_settings[$key]=${!key}; done
+  save_config_values initial_settings
+  dialog_app=kdialog
+  kdialog() { printf '%s\n' "$*"; }
+  load_manager_settings
+  native_settings=$(gui_settings_action)
+  [[ $native_settings == *'interval_minutes Check interval: 60'*'save Save changes'*'cancel Cancel without saving'* ]] ||
+    fail_test 'KDialog settings chooser omitted values or save controls'
+  [[ $(gui_manager_setting_value interval_minutes) == *'--inputbox'*'15–10080'*' 60' ]] ||
+    fail_test 'KDialog numeric setting used the wrong control'
+  [[ $(gui_manager_setting_value play_sound) == *'--menu true or false'*'true Enabled (true)'*'false Disabled (false)'* ]] ||
+    fail_test 'KDialog boolean setting used the wrong choices'
+  manager_settings[play_sound]=false
+  [[ $(gui_manager_setting_value play_sound) == *'--menu true or false'*'false Disabled (false)'*'true Enabled (true)'* ]] ||
+    fail_test 'KDialog boolean setting did not prefer the saved value'
+  [[ $(gui_manager_setting_value force_kill) == *'true may lose unsaved work; false is safer'* ]] ||
+    fail_test 'force-close setting omitted the unsaved-work warning'
+  unset -f kdialog
+  dialog_app=zenity
+  zenity() { printf '%s\n' "$*"; }
+  [[ $(gui_settings_action) == *'--column=Setting --column=Value'*'rollback_versions Rollback versions to keep: 3'* ]] ||
+    fail_test 'Zenity settings chooser omitted columns or values'
+  [[ $(gui_manager_setting_value notification_seconds) == *'--entry'*'--entry-text=15'* ]] ||
+    fail_test 'Zenity numeric setting used the wrong control'
+  unset -f zenity
+  dialog_app=kdialog
+  printf 'interval_minutes\nsave\n' >"$test_home/gui-settings-actions"
+  gui_settings_action() {
+    local action
+    read -r action <"$test_home/gui-settings-actions"
+    sed -i '1d' "$test_home/gui-settings-actions"
+    printf '%s' "$action"
+  }
+  gui_manager_setting_value() { [[ $1 == interval_minutes ]]; printf '75'; }
+  gui_message() { printf '%s|%s\n' "$1" "$2" >>"$test_home/gui-settings-messages"; }
+  gui_settings
+  read_config
+  assert_eq "$interval_minutes" 75
+  grep -q 'Settings saved' "$test_home/gui-settings-messages" || fail_test 'native settings did not confirm save'
+  saved_config=$(sha256sum "$config_file")
+  printf 'interval_minutes\ncancel\n' >"$test_home/gui-settings-actions"
+  gui_manager_setting_value() { printf '16'; }
+  gui_settings 2>/dev/null
+  assert_eq "$(sha256sum "$config_file")" "$saved_config"
+  grep -q 'Invalid setting' "$test_home/gui-settings-messages" || fail_test 'native settings did not explain invalid input'
+  gui_manager_action() { printf 'settings'; }
+  gui_settings() { : >"$test_home/gui-settings-opened"; }
+  current_chatgpt_version() { printf '26.900.1'; }
+  refresh_manager_notifier() { :; }
+  manager_gui
+  [[ -e $test_home/gui-settings-opened ]] || fail_test 'native manager did not dispatch settings'
+)
+
+# Terminal settings use the same schema and Save/Cancel semantics.
+(
+  . "$root/chatgpt-update-notifier"
+  config_file="$test_home/terminal-settings-config"
+  set_config_defaults
+  declare -A initial_settings=()
+  for entry in "${config_defaults[@]}"; do key=${entry%%=*}; initial_settings[$key]=${!key}; done
+  save_config_values initial_settings
+  manager_terminal_settings <<< $'1\n75\n3\nfalse\n13\n' >"$test_home/terminal-settings-output"
+  read_config
+  assert_eq "$interval_minutes" 75
+  assert_eq "$play_sound" false
+  grep -q 'Settings saved' "$test_home/terminal-settings-output" || fail_test 'terminal settings did not confirm save'
+  manager_terminal_settings <<< $'010\n45\n13\n' >"$test_home/terminal-leading-zero-output"
+  read_config
+  assert_eq "$restart_delay_seconds" 45
+  assert_eq "$force_kill" false
+  saved_config=$(sha256sum "$config_file")
+  manager_terminal_settings <<< $'1\n16\n13\n' >"$test_home/terminal-invalid-setting-output" 2>/dev/null
+  read_config
+  assert_eq "$interval_minutes" 75
+  grep -q 'Invalid value' "$test_home/terminal-invalid-setting-output" || fail_test 'terminal settings did not explain invalid input'
+  manager_terminal_settings <<< $'2\n30\n14\n' >/dev/null
+  assert_eq "$(sha256sum "$config_file")" "$saved_config"
 )
 
 # Opening either manager checks for a newer notifier. A native CTA opens the
@@ -612,7 +742,7 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
     : >"$test_home/terminal-update-ran"
     return 1
   }
-  manager_terminal_loop <<< $'5\n'
+  manager_terminal_loop <<< $'6\n'
 ) >"$test_home/terminal-update-output"
 [[ -e $test_home/terminal-update-ran ]] || fail_test 'terminal manager did not run the notifier update flow'
 grep -q 'Update notifier to 1.3.0' "$test_home/terminal-update-output" || fail_test 'terminal manager omitted update CTA'
@@ -631,6 +761,18 @@ manage
 assert_eq "$gui_calls" 1
 unset -f kdialog date
 
+# The detached terminal fallback is a fresh process and must reload customized
+# values before its settings editor can stage or save them.
+(
+  . "$root/chatgpt-update-notifier"
+  config_file="$test_home/fresh-terminal-config"
+  printf 'interval_minutes=75\nplay_sound=false\n' >"$config_file"
+  set_config_defaults
+  if manager_terminal </dev/null 2>/dev/null; then fail_test 'terminal manager accepted non-interactive input'; fi
+  assert_eq "$interval_minutes" 75
+  assert_eq "$play_sound" false
+)
+
 # Recoverable failures do not close the numbered manager opened from the desktop.
 (
   . "$root/chatgpt-update-notifier"
@@ -641,7 +783,7 @@ unset -f kdialog date
   current_chatgpt_version() { printf '26.900.1'; }
   run_check() { return 1; }
   rollback_interactive() { return 1; }
-  manager_terminal_loop <<< $'1\n\n2\n4\n\n5\n'
+  manager_terminal_loop <<< $'1\n\n2\n4\n\n6\n'
   [[ ! -e $state_dir/silenced-version && ! -e $state_dir/silenced-notifier-version ]] ||
     fail_test 'terminal manager did not clear both silence markers'
 ) >"$test_home/terminal-manager-output"

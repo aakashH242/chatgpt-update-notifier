@@ -80,6 +80,44 @@ valid_uint() {
 # Accept only the two literal boolean values supported by the flat config format.
 valid_bool() { [[ $1 == true || $1 == false ]]; }
 
+# Validate one supported config value and place its canonical representation in
+# validated_config_value. Both file parsing and the manager settings editor use
+# this boundary so their accepted values cannot drift apart.
+validate_config_value() {
+  local key=$1 value=$2
+  case $key in
+    interval_minutes)
+      valid_uint "$value" 15 10080 || { error 'interval_minutes must be 15–10080'; return 1; }
+      value=$((10#$value))
+      (( value % 15 == 0 )) || {
+        error 'interval_minutes must be a multiple of 15 between 15 and 10080'
+        return 1
+      }
+      ;;
+    notification_seconds)
+      valid_uint "$value" 1 600 || { error 'notification_seconds must be between 1 and 600'; return 1; }
+      value=$((10#$value))
+      ;;
+    shutdown_timeout_seconds)
+      valid_uint "$value" 1 60 || { error 'shutdown_timeout_seconds must be between 1 and 60'; return 1; }
+      value=$((10#$value))
+      ;;
+    play_sound|assume_yes|stop_app|force_kill|restart_app|enable_gui)
+      valid_bool "$value" || { error "$key must be true or false"; return 1; }
+      ;;
+    stop_delay_seconds|restart_delay_seconds)
+      valid_uint "$value" 0 180 || { error "$key must be between 0 and 180"; return 1; }
+      value=$((10#$value))
+      ;;
+    rollback_versions)
+      valid_uint "$value" 0 1000 || { error 'rollback_versions must be between 0 and 1000'; return 1; }
+      value=$((10#$value))
+      ;;
+    *) error "Unsupported config key: $key"; return 1 ;;
+  esac
+  validated_config_value=$value
+}
+
 # Build the options shared by every alert. sound-name is a standard desktop hint;
 # notification servers that do not support sounds may safely ignore it.
 set_notification_options() {
@@ -129,38 +167,8 @@ read_config() {
     key=${BASH_REMATCH[1]}
     value=${BASH_REMATCH[2]}
     [[ -z ${seen[$key]+x} ]] || { error "Invalid or duplicate config entry: $line"; return 1; }
-    case $key in
-      interval_minutes)
-        valid_uint "$value" 15 10080 || { error 'interval_minutes must be 15–10080'; return 1; }
-        value=$((10#$value))
-        (( value % 15 == 0 )) || {
-          error 'interval_minutes must be a multiple of 15 between 15 and 10080'
-          return 1
-        }
-        seen[$key]=$value
-        ;;
-      notification_seconds)
-        valid_uint "$value" 1 600 || { error 'notification_seconds must be between 1 and 600'; return 1; }
-        seen[$key]=$((10#$value))
-        ;;
-      shutdown_timeout_seconds)
-        valid_uint "$value" 1 60 || { error 'shutdown_timeout_seconds must be between 1 and 60'; return 1; }
-        seen[$key]=$((10#$value))
-        ;;
-      play_sound|assume_yes|stop_app|force_kill|restart_app|enable_gui)
-        valid_bool "$value" || { error "$key must be true or false"; return 1; }
-        seen[$key]=$value
-        ;;
-      stop_delay_seconds|restart_delay_seconds)
-        valid_uint "$value" 0 180 || { error "$key must be between 0 and 180"; return 1; }
-        seen[$key]=$((10#$value))
-        ;;
-      rollback_versions)
-        valid_uint "$value" 0 1000 || { error 'rollback_versions must be between 0 and 1000'; return 1; }
-        seen[$key]=$((10#$value))
-        ;;
-      *) error "Invalid or duplicate config entry: $line"; return 1 ;;
-    esac
+    validate_config_value "$key" "$value" || return 1
+    seen[$key]=$validated_config_value
   done <"$config_file"
   for entry in "${config_defaults[@]}"; do
     default_key=${entry%%=*}
@@ -183,6 +191,43 @@ append_missing_config_defaults() {
     return 1
   }
   printf '\n%s\n' "${missing_config_defaults[@]}" >>"$config_file"
+}
+
+# Atomically replace the config from a complete associative array named by the
+# caller. Every value is validated before a private same-directory file can
+# replace the live config, so cancellation or any failed write keeps it intact.
+save_config_values() {
+  [[ $1 =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || return 2
+  local -n values=$1
+  local directory temp entry key content
+  local -A canonical=()
+  [[ ! -L $config_file ]] || { error "Cannot replace symlink config: $config_file"; return 1; }
+  if [[ -e $config_file && ( ! -f $config_file || ! -w $config_file ) ]]; then
+    error "Cannot replace config: $config_file"
+    return 1
+  fi
+  for entry in "${config_defaults[@]}"; do
+    key=${entry%%=*}
+    [[ -n ${values[$key]+x} ]] || { error "Missing config value: $key"; return 1; }
+    validate_config_value "$key" "${values[$key]}" || return 1
+    canonical[$key]=$validated_config_value
+  done
+  directory=${config_file%/*}
+  mkdir -p "$directory" || return 1
+  temp=$(mktemp "$directory/.config.XXXXXX") || return 1
+  chmod 600 "$temp" || { rm -f -- "$temp"; return 1; }
+  content='# Managed by ChatGPT Update Notifier. Checks: 15–10080 in steps of 15; alert: 1–600; shutdown: 1–60; delays: 0–180; rollbacks: 0–1000.'$'\n'
+  for entry in "${config_defaults[@]}"; do
+    key=${entry%%=*}
+    content+="$key=${canonical[$key]}"$'\n'
+  done
+  printf '%s' "$content" >"$temp" || { rm -f -- "$temp"; return 1; }
+  mv -T -- "$temp" "$config_file" || { rm -f -- "$temp"; return 1; }
+  for entry in "${config_defaults[@]}"; do
+    key=${entry%%=*}
+    printf -v "$key" '%s' "${canonical[$key]}"
+  done
+  missing_config_defaults=()
 }
 
 # Tell the user why app checks paused. A bad config cannot supply its own timeout,

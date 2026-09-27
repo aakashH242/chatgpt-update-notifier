@@ -82,7 +82,8 @@ You can run these from a terminal too. The command lives at `~/.local/bin/chatgp
 ## Configuration
 
 The installer creates the config file at `~/.config/chatgpt-update-notifier/config`.
-You can change it any time; the next run picks up the new values without a service reload.
+Open **ChatGPT Update Notifier → Settings** to change these values with native dialogs or the terminal menu.
+You can also edit the file directly; the next run picks up changes without a service reload.
 
 ```ini
 # Check for updates this often. Use 15-minute steps from 15 minutes to one week (10080).
