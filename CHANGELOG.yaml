@@ -1,5 +1,13 @@
 # Release notes use this simple shape so the Bash updater can display them without a YAML parser.
 releases:
+  - version: 1.2.0
+    changes:
+      - Exact package rollback copies with CLI, notification, and application-menu restore flows
+      - Configurable rollback retention from one to 1000 versions, or unlimited
+      - Native and terminal manager action to clear dismissed update versions
+      - Notifier update check and changelog-driven update action in both managers
+      - Optional native kdialog or zenity manager with a terminal fallback
+      - Verified rollback results, Arch signatures, and protection against concurrent package operations
   - version: 1.1.0
     changes:
       - Configurable desktop notification sounds, enabled by default
