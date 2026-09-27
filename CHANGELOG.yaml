@@ -1,5 +1,9 @@
 # Release notes use this simple shape so the Bash updater can display them without a YAML parser.
 releases:
+  - version: 1.2.2
+    changes:
+      - Fedora can now recover a missing rollback copy from an exact, signed ChatGPT RPM already in your user cache
+      - Fedora keeps newly downloaded ChatGPT RPMs so future updates can create rollback copies reliably
   - version: 1.2.1
     changes:
       - Smoother native manager windows with adaptive sizing, clear Select and Cancel buttons, and discoverable double-click selection

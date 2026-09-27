@@ -161,7 +161,7 @@ run_checked_as_user $'\n\n\n\n12\n\ny\n' "bash $root/install.sh" 'fresh installe
 config="$user_config_home/chatgpt-update-notifier/config"
 binary="$user_home/.local/bin/chatgpt-update-notifier"
 units="$user_config_home/systemd/user"
-program_data="$user_data_home/chatgpt-update-notifier/1.2.1"
+program_data="$user_data_home/chatgpt-update-notifier/1.2.2"
 desktop_file="$user_data_home/applications/chatgpt-update-notifier.desktop"
 icon_file="$user_data_home/icons/hicolor/scalable/apps/chatgpt-update-notifier.svg"
 [[ -x $binary && -f $units/chatgpt-update-notifier.service && -f $units/chatgpt-update-notifier.timer &&
@@ -291,7 +291,7 @@ case $expected_distro in
     grep -q '^sudo apt update$' "$mock_log" || fail_test 'APT refresh command was not selected'
     grep -q '^sudo apt install --only-upgrade chatgpt$' "$mock_log" || fail_test 'APT upgrade command was not selected'
     ;;
-  fedora) grep -q '^sudo dnf upgrade --refresh chatgpt$' "$mock_log" || fail_test 'DNF upgrade command was not selected' ;;
+  fedora) grep -q '^sudo dnf --setopt=keepcache=True upgrade --refresh chatgpt$' "$mock_log" || fail_test 'DNF upgrade command was not selected' ;;
   arch) grep -q '^sudo pacman -Syu$' "$mock_log" || fail_test 'full pacman upgrade command was not selected' ;;
 esac
 
@@ -307,7 +307,7 @@ case $expected_distro in
     grep -q '^sudo -n apt-get update$' "$mock_log" || fail_test 'one-click APT refresh was not noninteractive'
     grep -q '^sudo -n apt-get install --only-upgrade -y chatgpt$' "$mock_log" || fail_test 'one-click APT upgrade flags were wrong'
     ;;
-  fedora) grep -q '^sudo -n dnf upgrade --refresh -y chatgpt$' "$mock_log" || fail_test 'one-click DNF flags were wrong' ;;
+  fedora) grep -q '^sudo -n dnf --setopt=keepcache=True upgrade --refresh -y chatgpt$' "$mock_log" || fail_test 'one-click DNF flags were wrong' ;;
   arch) grep -q '^sudo -n pacman -Syu --noconfirm$' "$mock_log" || fail_test 'one-click pacman flags were wrong' ;;
 esac
 
