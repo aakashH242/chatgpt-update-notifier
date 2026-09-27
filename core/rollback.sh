@@ -124,6 +124,24 @@ stage_cached_artifact() {
   return 1
 }
 
+# Recover an exact Fedora RPM from the user's cache only when RPM confirms that
+# it carries a signature trusted by the system keyring. This covers the first
+# rollback-enabled update after DNF has already deleted its own package cache;
+# Debian packages have no equivalent embedded signature, and Arch already needs
+# its detached signature beside the package in pacman's cache.
+stage_user_cached_artifact() {
+  local staging_dir=$1 user_cache_root=${cache_dir%/*} candidate verification
+  [[ $distro == fedora && $user_cache_root != / && -d $user_cache_root ]] || return 1
+  while IFS= read -r -d '' candidate; do
+    verification=$(LC_ALL=C rpm --checksig "$candidate" 2>/dev/null) || continue
+    [[ $verification == *' signatures OK' ]] || continue
+    if stage_artifact "$candidate" "$staging_dir"; then return 0; fi
+  # Limit this fallback to nearby cache entries. The normal DNF caches remain
+  # the primary source, and an unusual cache layout can use the repository path.
+  done < <(find -H "$user_cache_root" -maxdepth 3 -type f -name 'chatgpt-*.rpm' -print0 2>/dev/null)
+  return 1
+}
+
 # Download the exact installed package from signed, refreshed OpenAI repository metadata.
 # Arch repositories normally expose only the newest build, so Arch safely requires its cache.
 stage_repository_artifact() {
@@ -261,7 +279,8 @@ snapshot_before_upgrade() {
   local staging_dir final_dir staging_suffix filename sha created signature_filename='' signature_sha=''
   staging_dir=$(mktemp -d "$rollback_root/.pending.XXXXXX") || return 1
   chmod 700 "$staging_dir" || { rm -r -- "$staging_dir"; return 1; }
-  if ! stage_cached_artifact "$staging_dir" && ! stage_repository_artifact "$staging_dir"; then
+  if ! stage_cached_artifact "$staging_dir" && ! stage_user_cached_artifact "$staging_dir" &&
+    ! stage_repository_artifact "$staging_dir"; then
     rm -r -- "$staging_dir"
     error "Could not save an exact rollback package for ChatGPT $package_version"
     return 1

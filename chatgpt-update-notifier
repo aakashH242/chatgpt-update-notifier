@@ -4,7 +4,7 @@ set -euo pipefail
 # app names this tool in messages and in its per-user directories.
 app=chatgpt-update-notifier
 # notifier_version must match VERSION in the same release archive.
-notifier_version=1.2.1
+notifier_version=1.2.2
 # core_modules is the complete, ordered set of version-matched implementation files.
 # Keeping one list prevents install and self-update checks inside this script from drifting.
 core_modules=(package-operation.sh rollback.sh manager.sh)
@@ -332,7 +332,7 @@ build_upgrade_command() {
         upgrade_step_one=(sudo -n apt-get update)
         upgrade_step_two=(sudo -n apt-get install --only-upgrade -y chatgpt)
         ;;
-      fedora) upgrade_step_one=(sudo -n dnf upgrade --refresh -y chatgpt) ;;
+      fedora) upgrade_step_one=(sudo -n dnf --setopt=keepcache=True upgrade --refresh -y chatgpt) ;;
       arch) upgrade_step_one=(sudo -n pacman -Syu --noconfirm) ;;
     esac
   else
@@ -341,7 +341,7 @@ build_upgrade_command() {
         upgrade_step_one=(sudo apt update)
         upgrade_step_two=(sudo apt install --only-upgrade chatgpt)
         ;;
-      fedora) upgrade_step_one=(sudo dnf upgrade --refresh chatgpt) ;;
+      fedora) upgrade_step_one=(sudo dnf --setopt=keepcache=True upgrade --refresh chatgpt) ;;
       arch) upgrade_step_one=(sudo pacman -Syu) ;;
     esac
   fi

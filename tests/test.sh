@@ -305,11 +305,11 @@ assert_eq "$(<"$state_dir/silenced-version")" "$available"
 curl() { [[ ${CURL_FAIL:-0} == 0 ]] || return 1; printf '%s' "${REMOTE_VERSION:-1.2.0}"; }
 notifier_alerts=0
 notify_notifier_update() { notifier_alerts=$((notifier_alerts + 1)); }
-REMOTE_VERSION=1.2.2 check_notifier_update
-REMOTE_VERSION=1.2.2 check_notifier_update
+REMOTE_VERSION=1.2.3 check_notifier_update
+REMOTE_VERSION=1.2.3 check_notifier_update
 assert_eq "$notifier_alerts" 2
-printf '1.2.2\n' >"$state_dir/silenced-notifier-version"
-REMOTE_VERSION=1.2.2 check_notifier_update
+printf '1.2.3\n' >"$state_dir/silenced-notifier-version"
+REMOTE_VERSION=1.2.3 check_notifier_update
 assert_eq "$notifier_alerts" 2
 REMOTE_VERSION=1.3.0 check_notifier_update
 assert_eq "$notifier_alerts" 3
@@ -520,6 +520,26 @@ mkdir "$fedora_stage"
 stage_repository_artifact "$fedora_stage" || fail_test 'exact Fedora repository package was not staged'
 grep -q -- "--disablerepo=\* --enablerepo=openai-chatgpt download .*chatgpt-0:26.903.1-1.x86_64" "$repository_log" ||
   fail_test 'Fedora exact-package download was not restricted to the OpenAI repo'
+
+# A signed exact RPM in the user's cache repairs the one-time bootstrap gap left
+# by an older DNF transaction. Unsigned lookalikes must never become snapshots.
+user_cache_root="$test_home/user-package-cache"
+cache_dir="$user_cache_root/chatgpt-update-notifier"
+mkdir -p "$user_cache_root/unsigned" "$user_cache_root/download"
+printf '%s|%s' "$package_version" "$package_arch" >"$user_cache_root/unsigned/chatgpt-unsigned.rpm"
+printf '%s|%s' "$package_version" "$package_arch" >"$user_cache_root/download/chatgpt-signed.rpm"
+rpm() {
+  if [[ $1 == --checksig ]]; then
+    [[ $2 == *signed.rpm && $2 != *unsigned.rpm ]] || { printf '%s: digests OK\n' "$2"; return 0; }
+    printf '%s: digests signatures OK\n' "$2"
+  fi
+}
+user_cache_stage="$test_home/user-cache-stage"
+mkdir "$user_cache_stage"
+stage_user_cached_artifact "$user_cache_stage" || fail_test 'signed user-cache RPM did not repair the snapshot gap'
+[[ ${snapshot_file##*/} == chatgpt-signed.rpm ]] || fail_test 'unsigned user-cache RPM was accepted'
+unset -f rpm
+
 package_version='26.903.1-1' package_arch=amd64 distro=debian
 prepare_apt_repository() { apt_options=(-o Test=isolated); }
 apt-get() {
@@ -551,11 +571,11 @@ installed_layout="$test_home/installed-layout"
 installed_data="$installed_layout/data"
 installed_home="$installed_layout/home"
 installed_bin="$installed_home/.local/bin"
-mkdir -p "$installed_bin/core" "$installed_data/chatgpt-update-notifier/1.2.1/core"
+mkdir -p "$installed_bin/core" "$installed_data/chatgpt-update-notifier/1.2.2/core"
 cp "$root/chatgpt-update-notifier" "$installed_bin/chatgpt-update-notifier"
 cp "$root/core/package-operation.sh" "$root/core/rollback.sh" "$root/core/manager.sh" \
-  "$installed_data/chatgpt-update-notifier/1.2.1/core/"
-printf '1.2.1\n' >"$installed_bin/VERSION"
+  "$installed_data/chatgpt-update-notifier/1.2.2/core/"
+printf '1.2.2\n' >"$installed_bin/VERSION"
 printf 'printf wrong >"$MODULE_MARKER"\n' >"$installed_bin/core/package-operation.sh"
 printf 'printf wrong >"$MODULE_MARKER"\n' >"$installed_bin/core/rollback.sh"
 printf 'printf wrong >>"$MODULE_MARKER"\n' >"$installed_bin/core/manager.sh"
@@ -565,13 +585,13 @@ HOME="$installed_home" MODULE_MARKER="$installed_layout/wrong-module" XDG_DATA_H
 [[ ! -e $installed_layout/wrong-module ]] || fail_test 'installed binary sourced an unrelated adjacent core directory'
 
 # Root-only diagnostics remain available when an installed companion is damaged.
-mv "$installed_data/chatgpt-update-notifier/1.2.1/core/package-operation.sh" \
-  "$installed_data/chatgpt-update-notifier/1.2.1/core/package-operation.sh.missing"
+mv "$installed_data/chatgpt-update-notifier/1.2.2/core/package-operation.sh" \
+  "$installed_data/chatgpt-update-notifier/1.2.2/core/package-operation.sh.missing"
 version_output=$(HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash "$installed_bin/chatgpt-update-notifier" --version)
 help_output=$(HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash "$installed_bin/chatgpt-update-notifier" --help)
-[[ $version_output == *'1.2.1'* && $help_output == *'Usage:'* ]] || fail_test 'diagnostics required a healthy core module'
-mv "$installed_data/chatgpt-update-notifier/1.2.1/core/package-operation.sh.missing" \
-  "$installed_data/chatgpt-update-notifier/1.2.1/core/package-operation.sh"
+[[ $version_output == *'1.2.2'* && $help_output == *'Usage:'* ]] || fail_test 'diagnostics required a healthy core module'
+mv "$installed_data/chatgpt-update-notifier/1.2.2/core/package-operation.sh.missing" \
+  "$installed_data/chatgpt-update-notifier/1.2.2/core/package-operation.sh"
 
 # A matching checkout VERSION selects only its adjacent modules. Missing source
 # components must fail instead of silently mixing with a previous installation.
@@ -1169,7 +1189,8 @@ assert_eq "$package_calls" 1
 assert_eq "$start_calls" 0
 assert_eq "$status_alerts" 2
 assert_eq "$last_status_body" 'Restart ChatGPT to use the updated version.'
-grep -qx -- '-n dnf upgrade --refresh -y chatgpt' "$sudo_log" || fail_test 'one-click DNF command omitted noninteractive flags'
+grep -qx -- '-n dnf --setopt=keepcache=True upgrade --refresh -y chatgpt' "$sudo_log" ||
+  fail_test 'one-click DNF command omitted cache retention or noninteractive flags'
 
 # restart_app=false keeps a successfully stopped app closed after the update.
 reset_upgrade_mocks
