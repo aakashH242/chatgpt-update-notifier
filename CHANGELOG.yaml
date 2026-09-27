@@ -1,5 +1,9 @@
 # Release notes use this simple shape so the Bash updater can display them without a YAML parser.
 releases:
+  - version: 1.2.0
+    changes:
+      - Roll back to previous versions if installed ChatGPT version is unstable
+      - Control panel for updates, rollback, clearing silences, changing settings and updating the notifier
   - version: 1.1.0
     changes:
       - Configurable desktop notification sounds, enabled by default

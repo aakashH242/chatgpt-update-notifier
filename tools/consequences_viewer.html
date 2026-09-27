@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Consequences · ChatGPT Update Notifier</title>
+  <style>
+    :root { color-scheme: light dark; font: 15px/1.5 system-ui, sans-serif; }
+    @media (prefers-color-scheme: light) {
+      :root { --bg:#f5f7fa; --panel:#fff; --ink:#142033; --muted:#526174; --line:#cbd5df; --blue:#215ba8; --blue-bg:#e8f1fd; --amber:#995c00; --amber-bg:#fff2d8; --focus:#086dd8; --code:#f2f5f9; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#101821; --panel:#182431; --ink:#ecf2f8; --muted:#aebdcd; --line:#405065; --blue:#80b8ff; --blue-bg:#223b58; --amber:#ffd083; --amber-bg:#513d24; --focus:#a9d2ff; --code:#111d2a; }
+    }
+    * { box-sizing:border-box; }
+    [hidden] { display:none !important; }
+    body { margin:0; background:var(--bg); color:var(--ink); }
+    button, input, select { font:inherit; }
+    button, select, input { color:var(--ink); background:var(--panel); border:1px solid var(--line); border-radius:7px; padding:7px 10px; }
+    button { cursor:pointer; }
+    button:hover, select:hover { border-color:var(--blue); }
+    :focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
+    header { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; padding:20px 24px 14px; border-bottom:1px solid var(--line); }
+    h1 { font-size:1.35rem; margin:0; letter-spacing:-.025em; }
+    header p { margin:3px 0 0; color:var(--muted); }
+    .meta { color:var(--muted); font-size:.83rem; text-align:right; }
+    .toolbar { display:flex; flex-wrap:wrap; align-items:end; gap:10px; padding:12px 24px; border-bottom:1px solid var(--line); }
+    .toolbar label { display:grid; gap:3px; color:var(--muted); font-size:.82rem; }
+    .toolbar label>* { font-size:.95rem; }
+    #entry { min-width:215px; }
+    #search { min-width:200px; }
+    .view-toggle { margin-left:auto; }
+    .zoom { display:flex; gap:6px; }
+    .workspace { display:grid; grid-template-columns:minmax(0, 1.55fr) minmax(350px, 1fr); height:calc(100vh - 139px); min-height:500px; }
+    .graph-panel { min-width:0; display:flex; flex-direction:column; border-right:1px solid var(--line); }
+    .panel-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 18px; border-bottom:1px solid var(--line); color:var(--muted); font-size:.85rem; }
+    #graph-scroll { flex:1; overflow:hidden; cursor:grab; touch-action:none; background-image:radial-gradient(var(--line) .65px, transparent .65px); background-size:20px 20px; }
+    #graph-scroll.dragging { cursor:grabbing; user-select:none; }
+    #graph { display:block; }
+    .room { flex:1; min-height:0; overflow:auto; position:relative; isolation:isolate; padding:20px; color:#edf3fb; background:linear-gradient(145deg,#17283b,#0c1421); }
+    .room::before { content:""; position:absolute; inset:0; z-index:-2; background:linear-gradient(90deg,#22374c 0 13%,#17283b 23% 77%,#22374c 87% 100%); clip-path:polygon(0 0,100% 0,86% 73%,14% 73%); }
+    .room::after { content:""; position:absolute; z-index:-1; left:-20%; right:-20%; bottom:-22%; height:52%; transform:perspective(420px) rotateX(58deg); background:repeating-linear-gradient(90deg,transparent 0 78px,#48617a 79px 80px),repeating-linear-gradient(0deg,transparent 0 58px,#48617a 59px 60px); opacity:.3; pointer-events:none; }
+    .room-content { max-width:920px; min-height:100%; margin:auto; display:flex; flex-direction:column; gap:16px; }
+    .room-top { display:flex; align-items:start; justify-content:space-between; gap:14px; }
+    .room-top p { margin:0 0 4px; color:#a8c9e5; font-size:.75rem; letter-spacing:.16em; text-transform:uppercase; }
+    .room-top h2 { margin:0; font-size:clamp(1.3rem,2.4vw,2rem); line-height:1.2; overflow-wrap:anywhere; }
+    .room-top small { display:block; margin-top:5px; color:#b5c6d8; font: .8rem ui-monospace, monospace; overflow-wrap:anywhere; }
+    .room button { color:#edf3fb; border-color:#6685a1; background:#21374b; }
+    .room button:hover { border-color:#a9d2ff; background:#2e4b65; }
+    .room button:disabled { opacity:.45; cursor:default; }
+    .room-screen { border:1px solid #6685a1; border-radius:10px; background:#07111cd9; box-shadow:0 18px 45px #050b15a8, inset 0 0 0 5px #2c4157; overflow:hidden; }
+    .room-screen-head { display:flex; justify-content:space-between; gap:10px; padding:9px 15px; border-bottom:1px solid #3c576e; color:#b7d3e7; font-size:.78rem; }
+    #room-code { margin:0; min-height:140px; max-height:clamp(140px,29vh,310px); overflow:auto; padding:16px 20px; color:#e4eef8; font:12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size:2; }
+    .door-heading { display:flex; justify-content:space-between; gap:10px; color:#c2d5e7; font-size:.84rem; }
+    .doors { display:grid; grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:10px; max-height:230px; overflow:auto; padding:2px 4px 6px 2px; }
+    .room .door { min-height:112px; padding:12px; text-align:left; border:2px solid #6389aa; border-bottom-width:5px; border-radius:34px 34px 5px 5px; background:linear-gradient(150deg,#315577,#172c43); box-shadow:inset 0 0 0 4px #1b334c,0 8px 12px #07111c99; }
+    .door small { display:block; color:#bdd6eb; font-size:.68rem; letter-spacing:.1em; text-transform:uppercase; }
+    .door strong { display:block; margin:8px 0 3px; line-height:1.25; overflow-wrap:anywhere; }
+    .door span { color:#c2d5e7; font-size:.76rem; }
+    .room-empty { margin:0; color:#c2d5e7; }
+    .edge { fill:none; stroke:var(--line); stroke-width:1.5; }
+    .node { cursor:pointer; }
+    .node rect { stroke:var(--line); stroke-width:1.3; fill:var(--panel); }
+    .node.function rect { fill:var(--blue-bg); }
+    .node.branch rect { fill:var(--amber-bg); }
+    .node.selected rect { stroke:var(--focus); stroke-width:2.5; }
+    .node .name { fill:var(--ink); font-size:13px; font-weight:650; }
+    .node .detail { fill:var(--muted); font-size:11px; }
+    .node .mark { fill:var(--blue); font-size:15px; font-weight:700; }
+    .node.branch .mark { fill:var(--amber); }
+    .node .you { fill:var(--focus); font-size:10px; font-weight:700; letter-spacing:.06em; }
+    aside { display:flex; flex-direction:column; min-width:0; overflow:auto; background:var(--panel); }
+    .details { padding:18px 20px; }
+    .details h2 { margin:0; font-size:1.2rem; overflow-wrap:anywhere; }
+    .location { color:var(--muted); font: .83rem/1.5 ui-monospace, monospace; overflow-wrap:anywhere; margin:4px 0 12px; }
+    .detail-actions { display:flex; flex-wrap:wrap; gap:7px; }
+    h3 { margin:17px 0 7px; font-size:.9rem; }
+    .list { display:flex; flex-wrap:wrap; gap:6px; max-height:115px; overflow:auto; }
+    .list button { font-size:.82rem; padding:4px 8px; text-align:left; }
+    .effect { display:flex; gap:7px; align-items:baseline; padding:3px 0; font-size:.82rem; overflow-wrap:anywhere; }
+    .effect small { color:var(--muted); white-space:nowrap; }
+    .effects { max-height:130px; overflow:auto; }
+    .code-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 20px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); color:var(--muted); font-size:.83rem; }
+    #code { margin:0; padding:10px 0 24px; overflow:auto; flex:1; background:var(--code); font:12.5px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size:2; }
+    .code-line { display:flex; min-width:max-content; padding:0 12px; }
+    .code-line.highlight { background:var(--blue-bg); }
+    .line-no { color:var(--muted); width:4.5ch; flex:none; user-select:none; text-align:right; margin-right:18px; }
+    .code-text { white-space:pre; }
+    .empty { color:var(--muted); font-size:.84rem; }
+    @media (max-width:850px) {
+      header { align-items:start; padding:15px; }
+      .toolbar { padding:10px 15px; }
+      .workspace { display:block; height:auto; }
+      .graph-panel { height:58vh; min-height:420px; border-right:0; border-bottom:1px solid var(--line); }
+      aside { height:52vh; min-height:400px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div><h1>Consequences graph</h1><p>Follow entrypoints and control branches into source. Paths are static and may be conditional.</p></div>
+    <div class="meta" id="snapshot"></div>
+  </header>
+  <div class="toolbar">
+    <label>Entrypoint <select id="entry"></select></label>
+    <label>Find function <input id="search" list="functions" placeholder="e.g. run_check" autocomplete="off"><datalist id="functions"></datalist></label>
+    <button id="focus" type="button">Focus</button>
+    <button id="view-toggle" class="view-toggle" type="button" aria-pressed="false">Map view</button>
+    <div id="zoom-controls" class="zoom" aria-label="Graph zoom" hidden>
+      <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
+      <button id="zoom-reset" type="button">100%</button>
+      <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+    </div>
+  </div>
+  <main class="workspace">
+    <section class="graph-panel" aria-label="Expandable consequences graph">
+      <div class="panel-head" id="graph-head" hidden><span id="graph-status"></span><span>Click a node to expand · drag empty space or scroll to pan</span></div>
+      <div id="graph-scroll" tabindex="0" aria-label="Graph canvas; drag, scroll, or use arrow keys to pan" hidden><svg id="graph" role="group" aria-label="Entrypoint and branch graph"></svg></div>
+      <div id="room" class="room" aria-label="Current code room">
+        <div class="room-content">
+          <div class="room-top"><div><p id="room-kind"></p><h2 id="room-name"></h2><small id="room-location"></small></div><button id="room-back" type="button">← Previous room</button></div>
+          <div class="room-screen"><div class="room-screen-head"><span>Source in this room</span><span id="room-range"></span></div><pre id="room-code"></pre></div>
+          <div class="door-heading"><span>Doors · connected code</span><span id="door-count"></span></div>
+          <div id="doors" class="doors"></div>
+        </div>
+      </div>
+    </section>
+    <aside aria-label="Source and consequences">
+      <div class="details">
+        <h2 id="node-name"></h2><p class="location" id="location"></p>
+        <div class="detail-actions"><button id="copy-path" type="button">Copy path:line</button><button id="root-here" type="button">Focus graph here</button></div>
+        <h3>Control branches</h3><div id="branches" class="list"></div>
+        <h3>Potential file and command effects</h3><div id="effects" class="effects"></div>
+        <h3>Callers</h3><div id="callers" class="list"></div>
+      </div>
+      <div class="code-heading"><span>Actual indexed source</span><span id="code-range"></span></div>
+      <pre id="code" aria-label="Source code"></pre>
+    </aside>
+  </main>
+  <script id="graph-data" type="application/json">__GRAPH_DATA__</script>
+  <script>
+    const data = JSON.parse(document.getElementById('graph-data').textContent);
+    const nodes = new Map(data.nodes.map(node => [node.id, node]));
+    const children = new Map();
+    const incoming = new Map();
+    for (const link of data.links) {
+      if (!children.has(link.source)) children.set(link.source, []);
+      children.get(link.source).push(link);
+      if (link.kind === 'call') {
+        if (!incoming.has(link.target)) incoming.set(link.target, []);
+        incoming.get(link.target).push(link);
+      }
+    }
+    for (const links of children.values()) links.sort((a, b) => a.line - b.line || a.kind.localeCompare(b.kind));
+    const $ = id => document.getElementById(id);
+    const svgNS = 'http://www.w3.org/2000/svg';
+    let root = 'file:chatgpt-update-notifier';
+    let selected = { id: root, line: 1 };
+    let expanded = new Set();
+    let zoom = 1;
+    const route = [];
+    const graphScroll = $('graph-scroll');
+    const graph = $('graph');
+    let panX = 0;
+    let panY = 0;
+    let drag = null;
+
+    function applyPan() {
+      graph.style.transform = `translate(${panX}px, ${panY}px)`;
+      graphScroll.style.backgroundPosition = `${panX}px ${panY}px`;
+    }
+
+    function stopDrag(event) {
+      if (!drag || event.pointerId !== drag.id) return;
+      drag = null;
+      graphScroll.classList.remove('dragging');
+      if (graphScroll.hasPointerCapture(event.pointerId)) graphScroll.releasePointerCapture(event.pointerId);
+    }
+
+    graphScroll.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || event.target.closest('.node')) return;
+      drag = { id:event.pointerId, x:event.clientX - panX, y:event.clientY - panY };
+      graphScroll.setPointerCapture(event.pointerId);
+      graphScroll.classList.add('dragging');
+      event.preventDefault();
+    });
+    graphScroll.addEventListener('pointermove', event => {
+      if (!drag || event.pointerId !== drag.id) return;
+      panX = event.clientX - drag.x;
+      panY = event.clientY - drag.y;
+      applyPan();
+    });
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) graphScroll.addEventListener(type, stopDrag);
+    graphScroll.addEventListener('wheel', event => {
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? graphScroll.clientHeight : 1;
+      panX -= event.deltaX * unit;
+      panY -= event.deltaY * unit;
+      applyPan();
+      event.preventDefault();
+    }, { passive:false });
+    graphScroll.addEventListener('keydown', event => {
+      const moves = { ArrowLeft:[80, 0], ArrowRight:[-80, 0], ArrowUp:[0, 80], ArrowDown:[0, -80] };
+      if (!moves[event.key]) return;
+      panX += moves[event.key][0];
+      panY += moves[event.key][1];
+      applyPan();
+      event.preventDefault();
+    });
+
+    function defaultExpansion() {
+      panX = panY = 0;
+      applyPan();
+      expanded = new Set([root]);
+      for (const link of children.get(root) || []) {
+        if (nodes.get(link.target)?.kind === 'function') expanded.add(link.target);
+      }
+      render();
+    }
+
+    function visibleTree() {
+      const visible = [];
+      function visit(id, depth, parent, link, ancestry) {
+        if (visible.length >= 350) return;
+        const item = { id, depth, parent, link, row: visible.length, cycle: ancestry.has(id) };
+        visible.push(item);
+        if (item.cycle || !expanded.has(id)) return;
+        const next = new Set(ancestry);
+        next.add(id);
+        for (const child of children.get(id) || []) visit(child.target, depth + 1, item, child, next);
+      }
+      visit(root, 0, null, null, new Set());
+      return visible;
+    }
+
+    function svgElement(name, attributes) {
+      const element = document.createElementNS(svgNS, name);
+      for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
+      return element;
+    }
+
+    function renderGraph() {
+      const visible = visibleTree();
+      const svg = $('graph');
+      svg.replaceChildren();
+      const maxDepth = Math.max(...visible.map(item => item.depth));
+      const width = (maxDepth + 1) * 260 + 40;
+      const height = visible.length * 66 + 40;
+      svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+      svg.style.width = `${width * zoom}px`;
+      svg.style.height = `${height * zoom}px`;
+      for (const item of visible) {
+        if (!item.parent) continue;
+        const x1 = item.parent.depth * 260 + 244;
+        const y1 = item.parent.row * 66 + 49;
+        const x2 = item.depth * 260 + 20;
+        const y2 = item.row * 66 + 49;
+        const path = svgElement('path', { class:'edge', d:`M${x1} ${y1} C${x1 + 32} ${y1},${x2 - 32} ${y2},${x2} ${y2}` });
+        const title = svgElement('title', {});
+        title.textContent = `${item.link.kind} at line ${item.link.line}`;
+        path.append(title);
+        svg.append(path);
+      }
+      for (const item of visible) {
+        const node = nodes.get(item.id);
+        if (!node) continue;
+        const x = item.depth * 260 + 20;
+        const y = item.row * 66 + 25;
+        const group = svgElement('g', { class:`node ${node.kind}${selected.id === item.id ? ' selected' : ''}`, role:'button', tabindex:'0', 'aria-label':`${node.kind} ${node.name}; ${expanded.has(item.id) ? 'expanded' : 'collapsed'}` });
+        if (children.has(item.id)) group.setAttribute('aria-expanded', String(expanded.has(item.id)));
+        group.append(svgElement('rect', { x, y, width:224, height:48, rx:8 }));
+        const mark = svgElement('text', { x:x + 11, y:y + 29, class:'mark' });
+        mark.textContent = item.cycle ? '↩' : children.has(item.id) ? (expanded.has(item.id) ? '−' : '+') : '·';
+        group.append(mark);
+        const name = svgElement('text', { x:x + 30, y:y + 21, class:'name' });
+        name.textContent = node.name.length > 25 ? `${node.name.slice(0, 24)}…` : node.name;
+        group.append(name);
+        const detail = svgElement('text', { x:x + 30, y:y + 38, class:'detail' });
+        detail.textContent = `${node.kind} · ${node.file}:${node.start}`;
+        group.append(detail);
+        const title = svgElement('title', {});
+        title.textContent = `${node.name} — ${node.file}:${node.start}-${node.end}`;
+        group.append(title);
+        if (selected.id === item.id) {
+          const you = svgElement('text', { x:x + 2, y:y - 7, class:'you' });
+          you.textContent = 'YOU ARE HERE';
+          group.append(you);
+        }
+        const activate = () => {
+          selected = { id:item.id, line:node.start };
+          if (!item.cycle && children.has(item.id)) expanded.has(item.id) ? expanded.delete(item.id) : expanded.add(item.id);
+          render();
+        };
+        group.addEventListener('click', activate);
+        group.addEventListener('keydown', event => {
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); }
+        });
+        svg.append(group);
+      }
+      $('graph-status').textContent = `${visible.length} visible nodes${visible.length >= 350 ? ' (display limit)' : ''} · ${data.nodes.length} indexed nodes`;
+    }
+
+    function buttonList(element, items, label) {
+      element.replaceChildren();
+      if (!items.length) { const empty = document.createElement('span'); empty.className = 'empty'; empty.textContent = 'None in this view'; element.append(empty); return; }
+      for (const item of items) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = item.text;
+        button.setAttribute('aria-label', `${label}: ${item.text}`);
+        button.addEventListener('click', item.action);
+        element.append(button);
+      }
+    }
+
+    function focusNode(id, line) {
+      root = id;
+      selected = { id, line:line || nodes.get(id).start };
+      defaultExpansion();
+      $('entry').value = data.roots.includes(root) ? root : '';
+    }
+
+    function showNode(id, line) {
+      const queue = [[root]];
+      const seen = new Set();
+      while (queue.length) {
+        const path = queue.shift();
+        const current = path[path.length - 1];
+        if (current === id) {
+          path.slice(0, -1).forEach(ancestor => expanded.add(ancestor));
+          selected = { id, line };
+          render();
+          return;
+        }
+        if (seen.has(current)) continue;
+        seen.add(current);
+        for (const link of children.get(current) || []) queue.push([...path, link.target]);
+      }
+      focusNode(id, line);
+    }
+
+    function renderDetails() {
+      const node = nodes.get(selected.id);
+      $('node-name').textContent = node.name;
+      $('location').textContent = `${node.file}:${node.start}–${node.end} · ${node.kind}`;
+      const branches = data.nodes.filter(candidate => candidate.kind === 'branch' && candidate.scope === (node.kind === 'branch' ? node.scope : node.id) && candidate.start >= node.start && candidate.end <= node.end && candidate.id !== node.id);
+      buttonList($('branches'), branches.slice(0, 40).map(branch => ({ text:`L${branch.start} ${branch.name}`, action:() => showNode(branch.id, branch.start) })), 'Open branch');
+
+      const reached = new Set();
+      const pending = [node.id];
+      while (pending.length && reached.size < 350) {
+        const id = pending.pop();
+        if (reached.has(id)) continue;
+        reached.add(id);
+        for (const link of children.get(id) || []) pending.push(link.target);
+      }
+      const effects = data.effects.filter(effect => {
+        if (node.kind === 'branch') return reached.has(effect.owner) || (effect.owner === node.scope && effect.line >= node.start && effect.line <= node.end);
+        return reached.has(effect.owner);
+      });
+      const unique = new Map();
+      for (const effect of effects) unique.set(`${effect.kind}:${effect.target}`, effect);
+      const box = $('effects');
+      box.replaceChildren();
+      if (!unique.size) { box.textContent = 'No indexed file or command effects'; box.className = 'effects empty'; }
+      else {
+        box.className = 'effects';
+        const order = { writes_file:0, executes:1, sources:2, reads_file:3, invokes:4 };
+        for (const effect of [...unique.values()].sort((a, b) => order[a.kind] - order[b.kind] || a.target.localeCompare(b.target)).slice(0, 35)) {
+          const row = document.createElement('div'); row.className = 'effect';
+          const kind = document.createElement('small'); kind.textContent = effect.kind.replaceAll('_', ' ');
+          const target = document.createElement('span'); target.textContent = `${effect.target} · L${effect.line}`;
+          row.append(kind, target); box.append(row);
+        }
+      }
+
+      const callers = (incoming.get(node.id) || []).map(link => {
+        const caller = nodes.get(link.source);
+        const scope = nodes.get(caller?.scope) || caller;
+        return scope ? { id:scope.id, line:link.line, name:scope.name } : null;
+      }).filter(Boolean);
+      const seen = new Set();
+      buttonList($('callers'), callers.filter(caller => { if (seen.has(caller.id)) return false; seen.add(caller.id); return true; }).map(caller => ({ text:`${caller.name} · L${caller.line}`, action:() => focusNode(caller.id, caller.line) })), 'Focus caller');
+
+      const source = data.files[node.file] || [];
+      const start = node.kind === 'entry' ? Math.max(1, selected.line - 10) : node.start;
+      const end = node.kind === 'entry' ? Math.min(start + 69, source.length) : Math.min(node.end, source.length);
+      $('code-range').textContent = `${node.file}:${start}–${end}`;
+      const code = $('code'); code.replaceChildren();
+      for (let line = start; line <= end; line++) {
+        const row = document.createElement('div'); row.className = `code-line${line === selected.line ? ' highlight' : ''}`;
+        const number = document.createElement('span'); number.className = 'line-no'; number.textContent = line;
+        const content = document.createElement('span'); content.className = 'code-text'; content.textContent = source[line - 1] || ' ';
+        row.append(number, content); code.append(row);
+      }
+      code.scrollTop = Math.max(0, (selected.line - start - 5) * 19.4);
+    }
+
+    function renderRoom() {
+      const node = nodes.get(selected.id);
+      $('room-kind').textContent = `${node.kind} room`;
+      $('room-name').textContent = node.name;
+      $('room-location').textContent = `${node.file}:${node.start}–${node.end}`;
+      $('room-back').disabled = !route.length;
+      const source = data.files[node.file] || [];
+      const start = node.kind === 'entry' ? Math.max(1, selected.line - 3) : node.start;
+      const end = Math.min(node.end, source.length, start + 59);
+      $('room-range').textContent = `${node.file}:${start}–${end}`;
+      $('room-code').textContent = source.slice(start - 1, end).map((line, index) => `${String(start + index).padStart(4)}  ${line}`).join('\n');
+      $('room-code').scrollTop = 0;
+
+      const links = children.get(node.id) || [];
+      $('door-count').textContent = `${links.length} ${links.length === 1 ? 'door' : 'doors'}`;
+      const doors = $('doors');
+      doors.replaceChildren();
+      if (!links.length) {
+        const empty = document.createElement('p');
+        empty.className = 'room-empty';
+        empty.textContent = 'No outgoing connections from this room. Use the map or Previous room to continue.';
+        doors.append(empty);
+      }
+      for (const link of links) {
+        const target = nodes.get(link.target);
+        if (!target) continue;
+        const door = document.createElement('button');
+        door.type = 'button';
+        door.className = 'door';
+        door.setAttribute('aria-label', `Enter ${target.name}, ${link.kind} at line ${link.line}`);
+        const kind = document.createElement('small'); kind.textContent = link.kind;
+        const name = document.createElement('strong'); name.textContent = target.name;
+        const line = document.createElement('span'); line.textContent = `${target.file} · L${link.line}`;
+        door.append(kind, name, line);
+        door.addEventListener('click', () => {
+          route.push({ ...selected });
+          showNode(target.id, target.start);
+        });
+        doors.append(door);
+      }
+    }
+
+    function render() { renderGraph(); renderDetails(); renderRoom(); }
+    const rootSelect = $('entry');
+    for (const id of data.roots) {
+      const option = document.createElement('option');
+      option.value = id; option.textContent = nodes.get(id).name;
+      rootSelect.append(option);
+    }
+    rootSelect.value = root;
+    rootSelect.addEventListener('change', () => { root = rootSelect.value; selected = {id:root, line:1}; route.length = 0; defaultExpansion(); });
+    for (const node of data.nodes.filter(node => node.kind === 'function')) {
+      const option = document.createElement('option'); option.value = `${node.name} · ${node.file}`;
+      $('functions').append(option);
+    }
+    $('focus').addEventListener('click', () => {
+      const query = $('search').value.trim().toLowerCase();
+      const node = data.nodes.find(node => node.kind === 'function' && `${node.name} · ${node.file}`.toLowerCase() === query) || data.nodes.find(node => node.kind === 'function' && node.name.toLowerCase() === query) || data.nodes.find(node => node.kind === 'function' && node.name.toLowerCase().includes(query));
+      if (query && node) focusNode(node.id, node.start);
+      else { $('search').setCustomValidity('No matching function'); $('search').reportValidity(); }
+    });
+    $('search').addEventListener('input', () => $('search').setCustomValidity(''));
+    $('search').addEventListener('keydown', event => { if (event.key === 'Enter') $('focus').click(); });
+    $('root-here').addEventListener('click', () => focusNode(selected.id, selected.line));
+    $('room-back').addEventListener('click', () => {
+      if (!route.length) return;
+      const previous = route.pop();
+      showNode(previous.id, previous.line);
+    });
+    $('copy-path').addEventListener('click', async () => {
+      const node = nodes.get(selected.id);
+      try {
+        await navigator.clipboard.writeText(`${node.file}:${selected.line}`);
+        $('copy-path').textContent = 'Copied';
+      } catch { $('copy-path').textContent = 'Use path shown above'; }
+      setTimeout(() => $('copy-path').textContent = 'Copy path:line', 1200);
+    });
+    function centerSelected() {
+      const item = visibleTree().find(item => item.id === selected.id);
+      if (!item) return;
+      panX = $('graph-scroll').clientWidth / 2 - (item.depth * 260 + 132) * zoom;
+      panY = $('graph-scroll').clientHeight / 2 - (item.row * 66 + 49) * zoom;
+      applyPan();
+    }
+    function setMapVisible(visible) {
+      $('room').hidden = visible;
+      $('graph-head').hidden = !visible;
+      graphScroll.hidden = !visible;
+      $('zoom-controls').hidden = !visible;
+      $('view-toggle').textContent = visible ? 'Enter room' : 'Map view';
+      $('view-toggle').setAttribute('aria-pressed', String(visible));
+      if (visible) centerSelected();
+    }
+    $('view-toggle').addEventListener('click', () => setMapVisible($('room').hidden === false));
+    function setZoom(value) { zoom = Math.max(.55, Math.min(1.7, value)); renderGraph(); centerSelected(); $('zoom-reset').textContent = `${Math.round(zoom * 100)}%`; }
+    $('zoom-out').addEventListener('click', () => setZoom(zoom - .15));
+    $('zoom-in').addEventListener('click', () => setZoom(zoom + .15));
+    $('zoom-reset').addEventListener('click', () => setZoom(1));
+    $('snapshot').textContent = `Index ${new Date(data.indexed_at * 1000).toLocaleString()} · offline snapshot`;
+    defaultExpansion();
+  </script>
+</body>
+</html>
