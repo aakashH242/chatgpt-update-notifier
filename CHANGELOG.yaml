@@ -1,5 +1,8 @@
 # Release notes use this simple shape so the Bash updater can display them without a YAML parser.
 releases:
+  - version: 1.2.1
+    changes:
+      - Smoother native manager windows with adaptive sizing, clear Select and Cancel buttons, and discoverable double-click selection
   - version: 1.2.0
     changes:
       - Roll back to previous versions if installed ChatGPT version is unstable
