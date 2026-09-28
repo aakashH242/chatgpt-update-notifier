@@ -783,6 +783,8 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
 (
   . "$root/chatgpt-update-notifier"
   state_dir="$test_home/terminal-update-state"
+  mkdir -p "$state_dir"
+  printf '1.3.0\n' >"$state_dir/silenced-notifier-version"
   refresh_notifier_update() { latest_notifier_version=1.3.0; return 0; }
   current_chatgpt_version() { printf '26.900.1'; }
   update_notifier() {
@@ -790,9 +792,11 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
     : >"$test_home/terminal-update-ran"
     return 1
   }
-  manager_terminal_loop <<< $'6\n'
+  manager_terminal_loop <<< $'4\n1\n\n6\n'
 ) >"$test_home/terminal-update-output"
 [[ -e $test_home/terminal-update-ran ]] || fail_test 'terminal manager did not run the notifier update flow'
+[[ ! -e $test_home/terminal-update-state/silenced-notifier-version ]] ||
+  fail_test 'terminal manager did not remove the notifier silence before updating'
 grep -q 'Update notifier to 1.3.0' "$test_home/terminal-update-output" || fail_test 'terminal manager omitted update CTA'
 grep -q 'What is new in 1.3.0' "$test_home/terminal-update-output" || fail_test 'terminal manager omitted changelog flow'
 
@@ -830,7 +834,7 @@ unset -f kdialog date
   printf '26.901.1\n' >"$state_dir/silenced-version"
   printf '1.3.0\n' >"$state_dir/silenced-notifier-version"
   current_chatgpt_version() { printf '26.900.1'; }
-  refresh_manager_notifier() { manager_notifier_version=''; }
+  refresh_notifier_update() { latest_notifier_version=1.3.0; return 0; }
   run_check() { return 1; }
   rollback_interactive() { return 1; }
   manager_terminal_silences <<<'1'
@@ -839,6 +843,8 @@ unset -f kdialog date
   manager_terminal_silences <<<'2'
   [[ ! -e $state_dir/silenced-version && ! -e $state_dir/silenced-notifier-version ]] ||
     fail_test 'terminal manager did not clear both silence markers'
+  assert_eq "$manager_notifier_version" 1.3.0
+  refresh_manager_notifier() { manager_notifier_version=''; }
   manager_terminal_loop <<< $'1\n\n2\n6\n'
 ) >"$test_home/terminal-manager-output"
 [[ $(grep -c 'ChatGPT Update Notifier' "$test_home/terminal-manager-output") -ge 3 ]] ||

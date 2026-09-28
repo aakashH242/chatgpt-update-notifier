@@ -311,8 +311,8 @@ manager_terminal_settings() {
   done
 }
 
-# List current markers in the terminal and remove one or all of them. Returning to
-# the main menu is explicit; invalid input changes no state.
+# List current markers in the terminal and remove one or all of them. A successful
+# removal refreshes the cached notifier action before the main menu is shown again.
 manager_terminal_silences() {
   local marker label version answer index clear_choice back_choice
   local -a markers=() labels=() versions=()
@@ -334,10 +334,14 @@ manager_terminal_silences() {
   valid_uint "$answer" 1 "$back_choice" || { printf 'Nothing changed.\n'; return 0; }
   answer=$((10#$answer))
   (( answer == back_choice )) && return 0
-  if (( answer == clear_choice )); then clear_silences; return; fi
-  index=$((answer - 1))
-  remove_silence_marker "${markers[index]}" || return 1
-  printf '%s %s can alert again.\n' "${labels[index]}" "${versions[index]}"
+  if (( answer == clear_choice )); then
+    clear_silences || return 1
+  else
+    index=$((answer - 1))
+    remove_silence_marker "${markers[index]}" || return 1
+    printf '%s %s can alert again.\n' "${labels[index]}" "${versions[index]}"
+  fi
+  refresh_manager_notifier
 }
 
 # Run the numbered manager after its caller has provided an interactive input stream.
