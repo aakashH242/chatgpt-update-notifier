@@ -161,7 +161,7 @@ run_checked_as_user $'\n\n\n\n12\n\ny\n' "bash $root/install.sh" 'fresh installe
 config="$user_config_home/chatgpt-update-notifier/config"
 binary="$user_home/.local/bin/chatgpt-update-notifier"
 units="$user_config_home/systemd/user"
-program_data="$user_data_home/chatgpt-update-notifier/1.2.2"
+program_data="$user_data_home/chatgpt-update-notifier/1.2.3"
 desktop_file="$user_data_home/applications/chatgpt-update-notifier.desktop"
 icon_file="$user_data_home/icons/hicolor/scalable/apps/chatgpt-update-notifier.svg"
 [[ -x $binary && -f $units/chatgpt-update-notifier.service && -f $units/chatgpt-update-notifier.timer &&

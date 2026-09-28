@@ -1,5 +1,9 @@
 # Release notes use this simple shape so the Bash updater can display them without a YAML parser.
 releases:
+  - version: 1.2.3
+    changes:
+      - Manual checks no longer bring back a ChatGPT update you silenced; they tell you which available version is silenced
+      - Open Manage silences in the control panel to unsilence ChatGPT or notifier versions individually, or clear them all
   - version: 1.2.2
     changes:
       - Fedora can now recover a missing rollback copy from an exact, signed ChatGPT RPM already in your user cache

@@ -4,7 +4,7 @@ set -euo pipefail
 # app names this tool in messages and in its per-user directories.
 app=chatgpt-update-notifier
 # notifier_version must match VERSION in the same release archive.
-notifier_version=1.2.2
+notifier_version=1.2.3
 # core_modules is the complete, ordered set of version-matched implementation files.
 # Keeping one list prevents install and self-update checks inside this script from drifting.
 core_modules=(package-operation.sh rollback.sh manager.sh)
@@ -583,15 +583,33 @@ run_check() {
     return 0
   fi
   printf '%s\n' "$candidate" >"$state_dir/last-available-version"
-  if is_silenced silenced-version "$candidate" && [[ ${1:-scheduled} != force ]]; then return 0; fi
+  if is_silenced silenced-version "$candidate"; then
+    if [[ ${1:-scheduled} == force ]]; then
+      send_notification --icon=chatgpt 'No unsilenced ChatGPT updates' \
+        "Version $candidate is available but currently silenced." || true
+      printf 'No unsilenced ChatGPT updates available. Version %s is silenced.\n' "$candidate"
+    fi
+    return 0
+  fi
   notify_update
 }
 
-# Compare one candidate with its per-stream silence marker. A missing marker
-# means this version has not been dismissed; marker is the named state file.
+# Print one valid saved silence value. The same reader keeps scheduled checks and
+# both manager interfaces consistent when state is missing or malformed.
+silence_marker_value() {
+  local marker="$state_dir/$1" value
+  [[ -r $marker ]] || return 1
+  value=$(<"$marker")
+  valid_package_token "$value" || return 1
+  printf '%s' "$value"
+}
+
+# Compare one candidate with its per-stream silence marker. A missing or malformed
+# marker means this version has not been dismissed.
 is_silenced() {
-  local marker="$state_dir/$1"
-  [[ -r $marker && $(<"$marker") == "$2" ]]
+  local value
+  value=$(silence_marker_value "$1") || return 1
+  [[ $value == "$2" ]]
 }
 
 # Copy a last-offered version into its matching silence marker for either
@@ -617,10 +635,20 @@ silence_notifier() {
     'No known notifier update to dismiss' 'Dismissed notifier update'
 }
 
+# Remove one known silence marker without allowing callers to name arbitrary files.
+# The manager uses this for individual choices; clear_silences reuses it for both.
+remove_silence_marker() {
+  case $1 in
+    silenced-version|silenced-notifier-version) rm -f -- "$state_dir/$1" ;;
+    *) error 'Unknown silence marker'; return 1 ;;
+  esac
+}
+
 # Remove only explicit dismissal markers. Last-seen versions and check cadence stay,
 # so any currently available release may alert again without forcing a network check.
 clear_silences() {
-  rm -f -- "$state_dir/silenced-version" "$state_dir/silenced-notifier-version" || {
+  remove_silence_marker silenced-version &&
+    remove_silence_marker silenced-notifier-version || {
     error 'Could not clear saved silences'
     return 1
   }
