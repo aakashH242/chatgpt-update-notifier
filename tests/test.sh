@@ -785,7 +785,12 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
   state_dir="$test_home/terminal-update-state"
   mkdir -p "$state_dir"
   printf '1.3.0\n' >"$state_dir/silenced-notifier-version"
-  refresh_notifier_update() { latest_notifier_version=1.3.0; return 0; }
+  refresh_calls=0
+  refresh_notifier_update() {
+    refresh_calls=$((refresh_calls + 1))
+    latest_notifier_version=1.3.0
+    (( refresh_calls == 1 ))
+  }
   current_chatgpt_version() { printf '26.900.1'; }
   update_notifier() {
     printf 'What is new in 1.3.0:\n  - Test release\n\nCommand: bash install.sh --release 1.3.0\n'
@@ -793,6 +798,7 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
     return 1
   }
   manager_terminal_loop <<< $'4\n1\n\n6\n'
+  assert_eq "$refresh_calls" 1
 ) >"$test_home/terminal-update-output"
 [[ -e $test_home/terminal-update-ran ]] || fail_test 'terminal manager did not run the notifier update flow'
 [[ ! -e $test_home/terminal-update-state/silenced-notifier-version ]] ||
@@ -837,6 +843,7 @@ unset -f kdialog date
   refresh_notifier_update() { latest_notifier_version=1.3.0; return 0; }
   run_check() { return 1; }
   rollback_interactive() { return 1; }
+  refresh_manager_notifier
   manager_terminal_silences <<<'1'
   [[ ! -e $state_dir/silenced-version && -e $state_dir/silenced-notifier-version ]] ||
     fail_test 'terminal manager did not remove only the selected silence'
