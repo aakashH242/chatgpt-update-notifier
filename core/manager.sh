@@ -15,6 +15,7 @@ declare -ga manager_setting_keys=()
 set_manager_notifier_action() {
   manager_notifier_version=''
   if [[ -n ${latest_notifier_version:-} ]] &&
+     valid_notifier_version "$latest_notifier_version" &&
      newer_notifier_version "$latest_notifier_version" "$notifier_version" &&
      ! is_silenced silenced-notifier-version "$latest_notifier_version"; then
     manager_notifier_version=$latest_notifier_version

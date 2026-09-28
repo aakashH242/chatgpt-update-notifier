@@ -776,9 +776,11 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
   open_terminal() { [[ $1 == --update ]] || fail_test 'native manager opened the wrong update command'; : >"$test_home/gui-update-opened"; }
   manager_gui
   [[ -e $test_home/gui-update-opened ]] || fail_test 'native manager did not open the notifier update flow'
-  refresh_notifier_update() { return 2; }
+  refresh_notifier_update() { latest_notifier_version=999.0.0oops; return 2; }
   refresh_manager_notifier 2>/dev/null
   [[ -z $manager_notifier_version ]] || fail_test 'failed manager check left a stale update CTA'
+  set_manager_notifier_action
+  [[ -z $manager_notifier_version ]] || fail_test 'manager restored an invalid cached notifier version'
 )
 (
   . "$root/chatgpt-update-notifier"
