@@ -16,7 +16,7 @@ refresh_manager_notifier() {
   local status=0
   manager_notifier_version=''
   refresh_notifier_update || status=$?
-  if (( status == 0 )); then
+  if (( status == 0 )) && ! is_silenced silenced-notifier-version "$latest_notifier_version"; then
     manager_notifier_version=$latest_notifier_version
   elif (( status == 2 )); then
     error 'Notifier update check failed; manager remains available'
@@ -58,7 +58,7 @@ gui_choice() {
 # Display the main mouse-selectable manager menu and print its stable action identifier.
 gui_manager_action() {
   local current=$1
-  local -a choices=(check 'Check for ChatGPT updates now' rollback 'Roll back ChatGPT' list 'Show saved rollback versions' clear 'Clear silences' settings 'Settings')
+  local -a choices=(check 'Check for ChatGPT updates now' rollback 'Roll back ChatGPT' list 'Show saved rollback versions' silences 'Manage silences' settings 'Settings')
   if [[ -n $manager_notifier_version ]]; then
     choices=(update "Update notifier to $manager_notifier_version" "${choices[@]}")
   fi
@@ -70,6 +70,50 @@ gui_message() {
   case $dialog_app in
     kdialog) kdialog --title "$1" --msgbox "$2" ;;
     zenity) zenity --info --title="$1" --width=600 --text="$2" ;;
+  esac
+}
+
+# Print each valid silence as marker, user-facing label, and version. One marker
+# per update stream is sufficient because a newer candidate never matches the old marker.
+silence_rows() {
+  local marker label version
+  for marker in silenced-version silenced-notifier-version; do
+    version=$(silence_marker_value "$marker") || continue
+    case $marker in
+      silenced-version) label='ChatGPT update' ;;
+      silenced-notifier-version) label='Notifier update' ;;
+    esac
+    printf '%s\t%s\t%s\n' "$marker" "$label" "$version"
+  done
+}
+
+# Show the existing native choice widget with only the silences that currently exist.
+gui_silence_action() {
+  local marker label version
+  local -a choices=()
+  while IFS=$'\t' read -r marker label version; do
+    choices+=("$marker" "Unsilence $label $version")
+  done < <(silence_rows)
+  ((${#choices[@]})) || { gui_message 'Manage silences' 'No versions are silenced.'; return 1; }
+  choices+=(all 'Clear all silences')
+  gui_choice 'Manage silences' 'Choose a version to unsilence.' Action Version "${choices[@]}"
+}
+
+# Remove the native-dialog selection through the shared marker helper, then confirm
+# which update stream can alert again. Closing the chooser changes nothing.
+manager_gui_silences() {
+  local action version
+  action=$(gui_silence_action) || return 0
+  case $action in
+    silenced-version|silenced-notifier-version)
+      version=$(silence_marker_value "$action") || return 0
+      remove_silence_marker "$action" || return 1
+      gui_message 'Silence removed' "$version can alert again."
+      ;;
+    all)
+      clear_silences >/dev/null || return 1
+      gui_message 'Silences cleared' 'All available versions can alert again.'
+      ;;
   esac
 }
 
@@ -222,7 +266,7 @@ manager_gui() {
     check) run_check force ;;
     rollback) launch_gui_rollback ;;
     list) gui_snapshot_list ;;
-    clear) clear_silences && gui_message 'ChatGPT Update Notifier' 'Silences cleared. Available versions can alert again.' ;;
+    silences) manager_gui_silences ;;
     settings) gui_settings ;;
     update) open_terminal --update || gui_message 'Update notifier' "Open a terminal and run: ~/.local/bin/$app --update" ;;
   esac
@@ -267,6 +311,35 @@ manager_terminal_settings() {
   done
 }
 
+# List current markers in the terminal and remove one or all of them. Returning to
+# the main menu is explicit; invalid input changes no state.
+manager_terminal_silences() {
+  local marker label version answer index clear_choice back_choice
+  local -a markers=() labels=() versions=()
+  while IFS=$'\t' read -r marker label version; do
+    markers+=("$marker") labels+=("$label") versions+=("$version")
+  done < <(silence_rows)
+  if ((${#markers[@]} == 0)); then
+    printf 'No versions are silenced.\n'
+    return 0
+  fi
+  printf '\nSilenced versions\n\n'
+  for ((index=0; index<${#markers[@]}; index++)); do
+    printf '  %d) Unsilence %s %s\n' "$((index + 1))" "${labels[index]}" "${versions[index]}"
+  done
+  clear_choice=$((${#markers[@]} + 1))
+  back_choice=$((clear_choice + 1))
+  printf '  %d) Clear all silences\n  %d) Back\n\n' "$clear_choice" "$back_choice"
+  read -r -p "Choose [1-$back_choice]: " answer || return 0
+  valid_uint "$answer" 1 "$back_choice" || { printf 'Nothing changed.\n'; return 0; }
+  answer=$((10#$answer))
+  (( answer == back_choice )) && return 0
+  if (( answer == clear_choice )); then clear_silences; return; fi
+  index=$((answer - 1))
+  remove_silence_marker "${markers[index]}" || return 1
+  printf '%s %s can alert again.\n' "${labels[index]}" "${versions[index]}"
+}
+
 # Run the numbered manager after its caller has provided an interactive input stream.
 # Keeping the loop separate lets failure handling be tested without a real desktop terminal.
 manager_terminal_loop() {
@@ -275,7 +348,7 @@ manager_terminal_loop() {
   current=$(current_chatgpt_version || true)
   while true; do
     printf '\nChatGPT Update Notifier\n\nCurrent ChatGPT: %s\n\n' "$current"
-    printf '  1) Check for ChatGPT updates now\n  2) Roll back ChatGPT\n  3) List saved rollback versions\n  4) Clear silences\n  5) Settings\n'
+    printf '  1) Check for ChatGPT updates now\n  2) Roll back ChatGPT\n  3) List saved rollback versions\n  4) Manage silences\n  5) Settings\n'
     last_choice=6
     if [[ -n $manager_notifier_version ]]; then
       printf '  6) Update notifier to %s\n  7) Exit\n\n' "$manager_notifier_version"
@@ -288,7 +361,7 @@ manager_terminal_loop() {
       1) run_check force || true; read -r -p 'Press Enter to continue...' _ || true ;;
       2) rollback_interactive || true; current=$(current_chatgpt_version || true) ;;
       3) list_rollback_snapshots; read -r -p 'Press Enter to continue...' _ || true ;;
-      4) clear_silences || true; read -r -p 'Press Enter to continue...' _ || true ;;
+      4) manager_terminal_silences || true; read -r -p 'Press Enter to continue...' _ || true ;;
       5) manager_terminal_settings || true ;;
       6)
         [[ -z $manager_notifier_version ]] && return 0
