@@ -10,14 +10,26 @@ manager_notifier_version=''
 declare -gA manager_settings=()
 declare -ga manager_setting_keys=()
 
+# Rebuild the conditional update action from the version already checked when the
+# manager opened. This avoids a second network request after a silence is removed.
+set_manager_notifier_action() {
+  manager_notifier_version=''
+  if [[ -n ${latest_notifier_version:-} ]] &&
+     valid_notifier_version "$latest_notifier_version" &&
+     newer_notifier_version "$latest_notifier_version" "$notifier_version" &&
+     ! is_silenced silenced-notifier-version "$latest_notifier_version"; then
+    manager_notifier_version=$latest_notifier_version
+  fi
+}
+
 # Refresh the manager's conditional notifier CTA without blocking the rest of the
 # menu on GitHub failure. The normal updater rechecks before downloading anything.
 refresh_manager_notifier() {
   local status=0
   manager_notifier_version=''
   refresh_notifier_update || status=$?
-  if (( status == 0 )) && ! is_silenced silenced-notifier-version "$latest_notifier_version"; then
-    manager_notifier_version=$latest_notifier_version
+  if (( status == 0 )); then
+    set_manager_notifier_action
   elif (( status == 2 )); then
     error 'Notifier update check failed; manager remains available'
   fi
@@ -311,8 +323,8 @@ manager_terminal_settings() {
   done
 }
 
-# List current markers in the terminal and remove one or all of them. Returning to
-# the main menu is explicit; invalid input changes no state.
+# List current markers in the terminal and remove one or all of them. A successful
+# removal rebuilds the notifier action from the version checked when the manager opened.
 manager_terminal_silences() {
   local marker label version answer index clear_choice back_choice
   local -a markers=() labels=() versions=()
@@ -334,10 +346,14 @@ manager_terminal_silences() {
   valid_uint "$answer" 1 "$back_choice" || { printf 'Nothing changed.\n'; return 0; }
   answer=$((10#$answer))
   (( answer == back_choice )) && return 0
-  if (( answer == clear_choice )); then clear_silences; return; fi
-  index=$((answer - 1))
-  remove_silence_marker "${markers[index]}" || return 1
-  printf '%s %s can alert again.\n' "${labels[index]}" "${versions[index]}"
+  if (( answer == clear_choice )); then
+    clear_silences || return 1
+  else
+    index=$((answer - 1))
+    remove_silence_marker "${markers[index]}" || return 1
+    printf '%s %s can alert again.\n' "${labels[index]}" "${versions[index]}"
+  fi
+  set_manager_notifier_action
 }
 
 # Run the numbered manager after its caller has provided an interactive input stream.

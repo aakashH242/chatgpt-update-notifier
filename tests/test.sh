@@ -305,11 +305,11 @@ assert_eq "$(<"$state_dir/silenced-version")" "$available"
 curl() { [[ ${CURL_FAIL:-0} == 0 ]] || return 1; printf '%s' "${REMOTE_VERSION:-1.2.0}"; }
 notifier_alerts=0
 notify_notifier_update() { notifier_alerts=$((notifier_alerts + 1)); }
-REMOTE_VERSION=1.2.4 check_notifier_update
-REMOTE_VERSION=1.2.4 check_notifier_update
+REMOTE_VERSION=1.2.5 check_notifier_update
+REMOTE_VERSION=1.2.5 check_notifier_update
 assert_eq "$notifier_alerts" 2
-printf '1.2.4\n' >"$state_dir/silenced-notifier-version"
-REMOTE_VERSION=1.2.4 check_notifier_update
+printf '1.2.5\n' >"$state_dir/silenced-notifier-version"
+REMOTE_VERSION=1.2.5 check_notifier_update
 assert_eq "$notifier_alerts" 2
 REMOTE_VERSION=1.3.0 check_notifier_update
 assert_eq "$notifier_alerts" 3
@@ -571,11 +571,11 @@ installed_layout="$test_home/installed-layout"
 installed_data="$installed_layout/data"
 installed_home="$installed_layout/home"
 installed_bin="$installed_home/.local/bin"
-mkdir -p "$installed_bin/core" "$installed_data/chatgpt-update-notifier/1.2.3/core"
+mkdir -p "$installed_bin/core" "$installed_data/chatgpt-update-notifier/1.2.4/core"
 cp "$root/chatgpt-update-notifier" "$installed_bin/chatgpt-update-notifier"
 cp "$root/core/package-operation.sh" "$root/core/rollback.sh" "$root/core/manager.sh" \
-  "$installed_data/chatgpt-update-notifier/1.2.3/core/"
-printf '1.2.3\n' >"$installed_bin/VERSION"
+  "$installed_data/chatgpt-update-notifier/1.2.4/core/"
+printf '1.2.4\n' >"$installed_bin/VERSION"
 printf 'printf wrong >"$MODULE_MARKER"\n' >"$installed_bin/core/package-operation.sh"
 printf 'printf wrong >"$MODULE_MARKER"\n' >"$installed_bin/core/rollback.sh"
 printf 'printf wrong >>"$MODULE_MARKER"\n' >"$installed_bin/core/manager.sh"
@@ -585,13 +585,13 @@ HOME="$installed_home" MODULE_MARKER="$installed_layout/wrong-module" XDG_DATA_H
 [[ ! -e $installed_layout/wrong-module ]] || fail_test 'installed binary sourced an unrelated adjacent core directory'
 
 # Root-only diagnostics remain available when an installed companion is damaged.
-mv "$installed_data/chatgpt-update-notifier/1.2.3/core/package-operation.sh" \
-  "$installed_data/chatgpt-update-notifier/1.2.3/core/package-operation.sh.missing"
+mv "$installed_data/chatgpt-update-notifier/1.2.4/core/package-operation.sh" \
+  "$installed_data/chatgpt-update-notifier/1.2.4/core/package-operation.sh.missing"
 version_output=$(HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash "$installed_bin/chatgpt-update-notifier" --version)
 help_output=$(HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash "$installed_bin/chatgpt-update-notifier" --help)
-[[ $version_output == *'1.2.3'* && $help_output == *'Usage:'* ]] || fail_test 'diagnostics required a healthy core module'
-mv "$installed_data/chatgpt-update-notifier/1.2.3/core/package-operation.sh.missing" \
-  "$installed_data/chatgpt-update-notifier/1.2.3/core/package-operation.sh"
+[[ $version_output == *'1.2.4'* && $help_output == *'Usage:'* ]] || fail_test 'diagnostics required a healthy core module'
+mv "$installed_data/chatgpt-update-notifier/1.2.4/core/package-operation.sh.missing" \
+  "$installed_data/chatgpt-update-notifier/1.2.4/core/package-operation.sh"
 
 # A matching checkout VERSION selects only its adjacent modules. Missing source
 # components must fail instead of silently mixing with a previous installation.
@@ -776,23 +776,35 @@ HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash -c \
   open_terminal() { [[ $1 == --update ]] || fail_test 'native manager opened the wrong update command'; : >"$test_home/gui-update-opened"; }
   manager_gui
   [[ -e $test_home/gui-update-opened ]] || fail_test 'native manager did not open the notifier update flow'
-  refresh_notifier_update() { return 2; }
+  refresh_notifier_update() { latest_notifier_version=999.0.0oops; return 2; }
   refresh_manager_notifier 2>/dev/null
   [[ -z $manager_notifier_version ]] || fail_test 'failed manager check left a stale update CTA'
+  set_manager_notifier_action
+  [[ -z $manager_notifier_version ]] || fail_test 'manager restored an invalid cached notifier version'
 )
 (
   . "$root/chatgpt-update-notifier"
   state_dir="$test_home/terminal-update-state"
-  refresh_notifier_update() { latest_notifier_version=1.3.0; return 0; }
+  mkdir -p "$state_dir"
+  printf '1.3.0\n' >"$state_dir/silenced-notifier-version"
+  refresh_calls=0
+  refresh_notifier_update() {
+    refresh_calls=$((refresh_calls + 1))
+    latest_notifier_version=1.3.0
+    (( refresh_calls == 1 ))
+  }
   current_chatgpt_version() { printf '26.900.1'; }
   update_notifier() {
     printf 'What is new in 1.3.0:\n  - Test release\n\nCommand: bash install.sh --release 1.3.0\n'
     : >"$test_home/terminal-update-ran"
     return 1
   }
-  manager_terminal_loop <<< $'6\n'
+  manager_terminal_loop <<< $'4\n1\n\n6\n'
+  assert_eq "$refresh_calls" 1
 ) >"$test_home/terminal-update-output"
 [[ -e $test_home/terminal-update-ran ]] || fail_test 'terminal manager did not run the notifier update flow'
+[[ ! -e $test_home/terminal-update-state/silenced-notifier-version ]] ||
+  fail_test 'terminal manager did not remove the notifier silence before updating'
 grep -q 'Update notifier to 1.3.0' "$test_home/terminal-update-output" || fail_test 'terminal manager omitted update CTA'
 grep -q 'What is new in 1.3.0' "$test_home/terminal-update-output" || fail_test 'terminal manager omitted changelog flow'
 
@@ -830,15 +842,18 @@ unset -f kdialog date
   printf '26.901.1\n' >"$state_dir/silenced-version"
   printf '1.3.0\n' >"$state_dir/silenced-notifier-version"
   current_chatgpt_version() { printf '26.900.1'; }
-  refresh_manager_notifier() { manager_notifier_version=''; }
+  refresh_notifier_update() { latest_notifier_version=1.3.0; return 0; }
   run_check() { return 1; }
   rollback_interactive() { return 1; }
+  refresh_manager_notifier
   manager_terminal_silences <<<'1'
   [[ ! -e $state_dir/silenced-version && -e $state_dir/silenced-notifier-version ]] ||
     fail_test 'terminal manager did not remove only the selected silence'
   manager_terminal_silences <<<'2'
   [[ ! -e $state_dir/silenced-version && ! -e $state_dir/silenced-notifier-version ]] ||
     fail_test 'terminal manager did not clear both silence markers'
+  assert_eq "$manager_notifier_version" 1.3.0
+  refresh_manager_notifier() { manager_notifier_version=''; }
   manager_terminal_loop <<< $'1\n\n2\n6\n'
 ) >"$test_home/terminal-manager-output"
 [[ $(grep -c 'ChatGPT Update Notifier' "$test_home/terminal-manager-output") -ge 3 ]] ||

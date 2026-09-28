@@ -1,5 +1,9 @@
 # Release notes use this simple shape so the Bash updater can display them without a YAML parser.
 releases:
+  - version: 1.2.4
+    changes:
+      - Unsilencing a notifier update now brings its Update action back immediately, without reopening the control panel
+      - The restored action uses the version already checked by the control panel, even if the network drops afterward
   - version: 1.2.3
     changes:
       - Manual checks no longer bring back a ChatGPT update you silenced; they tell you which available version is silenced
