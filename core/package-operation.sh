@@ -367,14 +367,9 @@ upgrade() {
   printf 'Saving the currently installed package for rollback...\n'
   if snapshot_before_upgrade; then
     snapshot_ready=1
-  elif [[ $mode == automatic ]]; then
-    error 'One-click update stopped because rollback protection could not be created'
-    notify_upgrade_status 'ChatGPT update not started' 'The current package could not be saved for rollback.'
-    release_package_operation_lock
-    return 1
   else
-    printf '\nA rollback copy could not be saved. The package is not cached or available from the repository.\n\n'
-    if ! confirm 'Continue without rollback protection?'; then
+    printf '\nA rollback copy could not be saved. If you continue, this notifier cannot roll back to the installed version.\n\n'
+    if ! confirm 'Continue without this rollback copy?'; then
       release_package_operation_lock
       printf 'Cancelled.\n'
       return 0

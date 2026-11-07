@@ -124,34 +124,46 @@ stage_cached_artifact() {
   return 1
 }
 
-# Recover an exact Fedora RPM from the user's cache only when RPM confirms that
-# it carries a signature trusted by the system keyring. This covers the first
-# rollback-enabled update after DNF has already deleted its own package cache;
-# Debian packages have no equivalent embedded signature, and Arch already needs
-# its detached signature beside the package in pacman's cache.
+# Sources outside signed repository metadata need a trusted embedded signature.
+stage_signed_fedora_rpm() {
+  local verification
+  verification=$(LC_ALL=C rpm --checksig "$1" 2>/dev/null) || return 1
+  [[ $verification == *' signatures OK' ]] || return 1
+  stage_artifact "$@"
+}
+
+# Recover an exact signed RPM left in the user cache after DNF cleaned its cache.
 stage_user_cached_artifact() {
-  local staging_dir=$1 user_cache_root=${cache_dir%/*} candidate verification
+  local staging_dir=$1 user_cache_root=${cache_dir%/*} candidate
   [[ $distro == fedora && $user_cache_root != / && -d $user_cache_root ]] || return 1
   while IFS= read -r -d '' candidate; do
-    verification=$(LC_ALL=C rpm --checksig "$candidate" 2>/dev/null) || continue
-    [[ $verification == *' signatures OK' ]] || continue
-    if stage_artifact "$candidate" "$staging_dir"; then return 0; fi
+    if stage_signed_fedora_rpm "$candidate" "$staging_dir"; then return 0; fi
   # Limit this fallback to nearby cache entries. The normal DNF caches remain
   # the primary source, and an unusual cache layout can use the repository path.
   done < <(find -H "$user_cache_root" -maxdepth 3 -type f -name 'chatgpt-*.rpm' -print0 2>/dev/null)
   return 1
 }
 
-# Download the exact installed package from signed, refreshed OpenAI repository metadata.
-# Arch repositories normally expose only the newest build, so Arch safely requires its cache.
+# Download the exact installed package. Fedora can also verify an unindexed RPM
+# from OpenAI's server; Arch still requires a cached package and signature.
 stage_repository_artifact() {
   local staging_dir=$1 download_dir candidate
   download_dir="$staging_dir/download"
-  mkdir "$download_dir"
+  mkdir "$download_dir" || return 1
   case $distro in
     fedora)
-      dnf -q --disablerepo='*' --enablerepo=openai-chatgpt download --destdir="$download_dir" \
-        "$package_name-$package_version.$package_arch" >/dev/null || return 1
+      if ! dnf -q --disablerepo='*' --enablerepo=openai-chatgpt download --destdir="$download_dir" \
+        "$package_name-$package_version.$package_arch" >/dev/null; then
+        # The RPM filename omits the epoch; stage_artifact still checks it.
+        local filename="$package_name-${package_version#*:}.$package_arch.rpm"
+        candidate="$download_dir/$filename"
+        printf 'Trying the exact Fedora RPM from OpenAI...\n'
+        curl -q --fail --silent --show-error --proto '=https' --max-time 600 --output "$candidate" \
+          "https://persistent.oaistatic.com/codex-app-prod/linux/rpm/$package_arch/$filename" || return 1
+        stage_signed_fedora_rpm "$candidate" "$staging_dir" || return 1
+        rm -r -- "$download_dir"
+        return
+      fi
       ;;
     ubuntu|debian)
       prepare_apt_repository || return 1
