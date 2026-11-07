@@ -305,11 +305,11 @@ assert_eq "$(<"$state_dir/silenced-version")" "$available"
 curl() { [[ ${CURL_FAIL:-0} == 0 ]] || return 1; printf '%s' "${REMOTE_VERSION:-1.2.0}"; }
 notifier_alerts=0
 notify_notifier_update() { notifier_alerts=$((notifier_alerts + 1)); }
-REMOTE_VERSION=1.2.5 check_notifier_update
-REMOTE_VERSION=1.2.5 check_notifier_update
+REMOTE_VERSION=1.2.6 check_notifier_update
+REMOTE_VERSION=1.2.6 check_notifier_update
 assert_eq "$notifier_alerts" 2
-printf '1.2.5\n' >"$state_dir/silenced-notifier-version"
-REMOTE_VERSION=1.2.5 check_notifier_update
+printf '1.2.6\n' >"$state_dir/silenced-notifier-version"
+REMOTE_VERSION=1.2.6 check_notifier_update
 assert_eq "$notifier_alerts" 2
 REMOTE_VERSION=1.3.0 check_notifier_update
 assert_eq "$notifier_alerts" 3
@@ -540,6 +540,43 @@ stage_user_cached_artifact "$user_cache_stage" || fail_test 'signed user-cache R
 [[ ${snapshot_file##*/} == chatgpt-signed.rpm ]] || fail_test 'unsigned user-cache RPM was accepted'
 unset -f rpm
 
+# An exact RPM may still be on the official server after DNF drops it from the index.
+(
+  distro=fedora
+  mock_installed_version='1:26.903.1-1'
+  stage_cached_artifact() { return 1; }
+  stage_user_cached_artifact() { return 1; }
+  dnf() { return 1; }
+  curl() {
+    assert_eq "${*: -1}" 'https://persistent.oaistatic.com/codex-app-prod/linux/rpm/x86_64/chatgpt-26.903.1-1.x86_64.rpm'
+    printf '%s|%s' "$package_version" "${download_arch:-$package_arch}" >"${*: -2:1}"
+    [[ ${download_fails:-false} == false ]]
+  }
+  rpm() {
+    case $1 in
+      -q) printf '%s\tx86_64\n' "$mock_installed_version" ;;
+      --checksig) printf '%s: %s\n' "$2" "${signature_result:-digests signatures OK}" ;;
+    esac
+  }
+  rollback_root="$test_home/unindexed-rpm-rollbacks"
+  snapshot_before_upgrade || fail_test 'could not recover the exact signed RPM after a DNF index miss'
+  find_snapshot_by_version "$mock_installed_version" || fail_test 'recovered RPM is not available for rollback'
+  [[ ! -e $selected_snapshot_dir/download ]] || fail_test 'recovery left a duplicate download'
+
+  for failure in unsigned wrong-arch incomplete; do
+    rollback_root="$test_home/unindexed-rpm-$failure"
+    signature_result='digests signatures OK' download_arch=x86_64 download_fails=false
+    case $failure in
+      unsigned) signature_result='digests OK' ;;
+      wrong-arch) download_arch=aarch64 ;;
+      incomplete) download_fails=true ;;
+    esac
+    if snapshot_before_upgrade 2>/dev/null; then fail_test "accepted $failure RPM recovery"; fi
+    [[ -z $(find "$rollback_root" -mindepth 1 -print -quit) ]] ||
+      fail_test "$failure RPM recovery left a partial snapshot"
+  done
+)
+
 package_version='26.903.1-1' package_arch=amd64 distro=debian
 prepare_apt_repository() { apt_options=(-o Test=isolated); }
 apt-get() {
@@ -571,11 +608,12 @@ installed_layout="$test_home/installed-layout"
 installed_data="$installed_layout/data"
 installed_home="$installed_layout/home"
 installed_bin="$installed_home/.local/bin"
-mkdir -p "$installed_bin/core" "$installed_data/chatgpt-update-notifier/1.2.4/core"
+installed_core="$installed_data/chatgpt-update-notifier/$notifier_version/core"
+mkdir -p "$installed_bin/core" "$installed_core"
 cp "$root/chatgpt-update-notifier" "$installed_bin/chatgpt-update-notifier"
 cp "$root/core/package-operation.sh" "$root/core/rollback.sh" "$root/core/manager.sh" \
-  "$installed_data/chatgpt-update-notifier/1.2.4/core/"
-printf '1.2.4\n' >"$installed_bin/VERSION"
+  "$installed_core/"
+cp "$root/VERSION" "$installed_bin/VERSION"
 printf 'printf wrong >"$MODULE_MARKER"\n' >"$installed_bin/core/package-operation.sh"
 printf 'printf wrong >"$MODULE_MARKER"\n' >"$installed_bin/core/rollback.sh"
 printf 'printf wrong >>"$MODULE_MARKER"\n' >"$installed_bin/core/manager.sh"
@@ -585,13 +623,11 @@ HOME="$installed_home" MODULE_MARKER="$installed_layout/wrong-module" XDG_DATA_H
 [[ ! -e $installed_layout/wrong-module ]] || fail_test 'installed binary sourced an unrelated adjacent core directory'
 
 # Root-only diagnostics remain available when an installed companion is damaged.
-mv "$installed_data/chatgpt-update-notifier/1.2.4/core/package-operation.sh" \
-  "$installed_data/chatgpt-update-notifier/1.2.4/core/package-operation.sh.missing"
+mv "$installed_core/package-operation.sh" "$installed_core/package-operation.sh.missing"
 version_output=$(HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash "$installed_bin/chatgpt-update-notifier" --version)
 help_output=$(HOME="$installed_home" XDG_DATA_HOME="$installed_data" bash "$installed_bin/chatgpt-update-notifier" --help)
-[[ $version_output == *'1.2.4'* && $help_output == *'Usage:'* ]] || fail_test 'diagnostics required a healthy core module'
-mv "$installed_data/chatgpt-update-notifier/1.2.4/core/package-operation.sh.missing" \
-  "$installed_data/chatgpt-update-notifier/1.2.4/core/package-operation.sh"
+[[ $version_output == *"$notifier_version"* && $help_output == *'Usage:'* ]] || fail_test 'diagnostics required a healthy core module'
+mv "$installed_core/package-operation.sh.missing" "$installed_core/package-operation.sh"
 
 # A matching checkout VERSION selects only its adjacent modules. Missing source
 # components must fail instead of silently mixing with a previous installation.
@@ -1082,8 +1118,7 @@ assert_eq "$pid_checks" 0
 assert_eq "$close_calls" 0
 assert_eq "$package_calls" 0
 
-# A missing exact package is explicit: manual mode defaults to cancelling, while
-# one-click mode aborts after sudo authentication without touching the app.
+# Neither mode proceeds without a rollback copy unless explicitly approved.
 reset_upgrade_mocks
 snapshot_status=1
 upgrade <<< $'y\nn\n' >"$test_home/upgrade-output" 2>"$test_home/upgrade-error"
@@ -1094,10 +1129,17 @@ grep -q 'A rollback copy could not be saved.' "$test_home/upgrade-output" || fai
 reset_upgrade_mocks
 configured_assume_yes=true
 snapshot_status=1
-if upgrade >"$test_home/upgrade-output" 2>"$test_home/upgrade-error"; then fail_test 'one-click update continued without rollback protection'; fi
+upgrade </dev/null >"$test_home/upgrade-output" 2>"$test_home/upgrade-error"
 assert_eq "$auth_calls" 1
 assert_eq "$close_calls" 0
 assert_eq "$package_calls" 0
+grep -q 'A rollback copy could not be saved.' "$test_home/upgrade-output" || fail_test 'one-click snapshot failure omitted its warning'
+reset_upgrade_mocks
+configured_assume_yes=true
+snapshot_status=1
+upgrade <<< 'y' >"$test_home/upgrade-output" 2>"$test_home/upgrade-error"
+assert_eq "$package_calls" 1
+assert_eq "$rollback_alerts" 0
 
 # A shared advisory lock rejects a second package operation before it snapshots,
 # stops ChatGPT, or invokes the package manager.

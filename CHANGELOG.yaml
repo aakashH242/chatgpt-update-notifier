@@ -1,5 +1,9 @@
 # Release notes use this simple shape so the Bash updater can display them without a YAML parser.
 releases:
+  - version: 1.2.5
+    changes:
+      - On Fedora, recover the exact signed rollback package from OpenAI even when DNF no longer lists that version
+      - If a rollback copy cannot be saved, both manual and one-click updates warn you and ask before continuing
   - version: 1.2.4
     changes:
       - Unsilencing a notifier update now brings its Update action back immediately, without reopening the control panel
